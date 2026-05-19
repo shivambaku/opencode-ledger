@@ -614,8 +614,11 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
         return
       }
       withActiveBlock((file, block) => {
-        const ok = yankBlockToClipboard(props.api, block)
-        showLedgerNotice(ok ? `Yanked ${blockLabel(file, block)}.` : "Clipboard unavailable. Enable OSC 52.", ok ? "#3ee06f" : "#f6b26b")
+        void yankBlockToClipboard(props.api, block)
+          .then((ok) => {
+            showLedgerNotice(ok ? `Yanked ${blockLabel(file, block)}.` : "Clipboard unavailable.", ok ? "#3ee06f" : "#f6b26b")
+          })
+          .catch((error) => showLedgerNotice(errorMessage(error), "#f6b26b"))
       })
     },
     approve() {

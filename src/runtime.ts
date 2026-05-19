@@ -1,8 +1,47 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import { spawn } from "node:child_process"
 import { ROUTE } from "./constants"
 import { parseHunk } from "./git"
 import type { LedgerBlock } from "./types"
 import { parseRouteParams } from "./utils"
+
+function writeOsc52(text: string) {
+  if (!process.stdout.isTTY) return false
+  const sequence = `\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`
+  process.stdout.write(process.env.TMUX || process.env.STY ? `\x1bPtmux;\x1b${sequence}\x1b\\` : sequence)
+  return true
+}
+
+function writeWithStdin(command: string, args: string[], text: string) {
+  return new Promise<boolean>((resolve) => {
+    const child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] })
+    let settled = false
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(ok)
+    }
+
+    child.on("error", () => finish(false))
+    child.on("close", (code) => finish(code === 0))
+    child.stdin.on("error", () => finish(false))
+    child.stdin.end(text)
+  })
+}
+
+async function writeNativeClipboard(text: string) {
+  if (process.platform === "darwin") return writeWithStdin("pbcopy", [], text)
+  if (process.platform !== "linux") return false
+
+  const commands: [string, string[]][] = process.env.WAYLAND_DISPLAY
+    ? [["wl-copy", []], ["xclip", ["-selection", "clipboard"]], ["xsel", ["--clipboard", "--input"]]]
+    : [["xclip", ["-selection", "clipboard"]], ["xsel", ["--clipboard", "--input"]], ["wl-copy", []]]
+
+  for (const [command, args] of commands) {
+    if (await writeWithStdin(command, args, text)) return true
+  }
+  return false
+}
 
 function currentSessionID(api: TuiPluginApi): string | undefined {
   const route = api.route.current
@@ -28,11 +67,18 @@ export function closeLedger(api: TuiPluginApi) {
   else api.route.navigate("home")
 }
 
-export function yankBlockToClipboard(api: TuiPluginApi, block: LedgerBlock) {
+export async function yankBlockToClipboard(api: TuiPluginApi, block: LedgerBlock) {
   const body = block.patch
     .split("\n")
     .filter((line) => !parseHunk(line))
     .join("\n")
     .trimEnd()
-  return api.renderer.copyToClipboardOSC52(body)
+
+  let renderer = false
+  try {
+    renderer = api.renderer.copyToClipboardOSC52(body)
+  } catch {}
+  const osc52 = renderer ? false : writeOsc52(body)
+  const native = await writeNativeClipboard(body)
+  return renderer || osc52 || native
 }
