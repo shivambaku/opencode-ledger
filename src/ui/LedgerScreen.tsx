@@ -16,8 +16,37 @@ import { DiffLine } from "./DiffLine"
 import { codeSyntax } from "./styles"
 
 type ExplanationRow = { text: string; muted?: boolean; fg?: string }
+type HelpRow = { section: string; keys: string; desc: string }
 type PanelLayout = { height?: number; flexGrow?: number; flexShrink?: number; flexBasis?: number | "auto"; minHeight?: number }
 type LedgerExplanation = NonNullable<LedgerBlock["review"]>["explanations"][number]
+
+const helpRows: HelpRow[] = [
+  { section: "File View", keys: "j / k", desc: "Move file selection" },
+  { section: "File View", keys: "enter", desc: "Open selected file diff" },
+  { section: "File View", keys: "space", desc: "Toggle selected file approval" },
+  { section: "File View", keys: "a", desc: "Analyze selected file" },
+  { section: "File View", keys: "A", desc: "Analyze all pending files" },
+  { section: "File View", keys: "x", desc: "Stop analysis" },
+  { section: "Diff View", keys: "j / k", desc: "Move diff cursor" },
+  { section: "Diff View", keys: "h / l", desc: "Scroll diff horizontally" },
+  { section: "Diff View", keys: "ctrl+d / ctrl+u", desc: "Scroll diff by half a page" },
+  { section: "Diff View", keys: "n / N", desc: "Next or previous block" },
+  { section: "Diff View", keys: "space", desc: "Toggle active block approval" },
+  { section: "Diff View", keys: "tab", desc: "Show or hide explanation" },
+  { section: "Diff View", keys: "enter", desc: "Focus explanation when visible" },
+  { section: "Diff View", keys: "|", desc: "Toggle explanation layout" },
+  { section: "Diff View", keys: "y", desc: "Yank active block" },
+  { section: "Diff View", keys: "e", desc: "Open editor at active block" },
+  { section: "Diff View", keys: "esc", desc: "Return to file view" },
+  { section: "Explanation", keys: "j / k", desc: "Scroll explanation" },
+  { section: "Explanation", keys: "ctrl+d / ctrl+u", desc: "Page explanation" },
+  { section: "Explanation", keys: "enter", desc: "Focus diff" },
+  { section: "Explanation", keys: "tab", desc: "Hide explanation" },
+  { section: "Explanation", keys: "esc", desc: "Return focus to diff" },
+  { section: "General", keys: "J / K", desc: "Next or previous file" },
+  { section: "General", keys: "?", desc: "Toggle help" },
+  { section: "General", keys: "q", desc: "Close ledger" },
+]
 
 export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string, unknown>; registerControls(controls?: LedgerControls): void; reconcileWorkspace(directory: string | undefined): Promise<void> }) {
   let root: BoxRenderable | undefined
@@ -27,11 +56,15 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   const [cursor, setCursor] = createSignal(route.index)
   const [scroll, setScroll] = createSignal(route.scroll)
   const [diffScroll, setDiffScroll] = createSignal(0)
+  const [diffScrollX, setDiffScrollX] = createSignal(0)
   const [diffCursor, setDiffCursor] = createSignal(0)
   const [explanationScroll, setExplanationScroll] = createSignal(0)
   const [inspectFocus, setInspectFocus] = createSignal<InspectFocus>("diff")
   const [inspectLayout, setInspectLayout] = createSignal<InspectLayout>("bottom")
   const [explanationVisible, setExplanationVisible] = createSignal(false)
+  const [helpVisible, setHelpVisible] = createSignal(false)
+  const [helpCursor, setHelpCursor] = createSignal(0)
+  const [helpScroll, setHelpScroll] = createSignal(0)
   const [inspect, setInspect] = createSignal(false)
   const [revision, setRevision] = createSignal(0)
   const [analyzingIDs, setAnalyzingIDs] = createSignal<Set<string>>(new Set())
@@ -117,6 +150,11 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   const headerHelpTextWidth = () => Math.min(headerHelpText().length, headerHelpWidth())
   const normalWidths = () => splitWidths(contentWidth(), 0.38, 28, 30, 52)
   const inspectWidths = () => splitWidths(contentWidth(), 0.62, 35, 28)
+  const helpWidth = () => Math.min(96, Math.max(44, contentWidth() - 4))
+  const helpHeight = () => Math.min(22, Math.max(10, dim().height - 4))
+  const helpBodyRows = () => Math.max(1, helpHeight() - 8)
+  const helpLeft = () => Math.max(0, Math.floor((dim().width - helpWidth()) / 2))
+  const helpTop = () => Math.max(1, Math.floor((dim().height - helpHeight()) / 2))
 
   let analysisToken = 0
   let statePollTimer: ReturnType<typeof setInterval> | undefined
@@ -152,10 +190,53 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
 
   function helpText() {
-    if (!inspect()) return "j/k move  enter inspect  a analyze  A analyze pending  x stop  space approve  e editor  q close"
-    if (!explanationVisible()) return "j/k move  n/N block  tab show  space approve  y yank  esc back"
-    if (inspectFocus() === "explanation") return "j/k scroll  n/N block  enter diff  tab hide  | layout  space approve  y yank  esc back"
-    return "j/k move  n/N block  enter explanation  tab hide  | layout  space approve  y yank  esc back"
+    return "? help"
+  }
+
+  function keepHelpRowVisible(nextIndex = helpCursor()) {
+    const row = clip(nextIndex, 0, helpRows.length - 1)
+    const top = clip(helpScroll(), 0, Math.max(0, helpRows.length - helpBodyRows()))
+    const bottom = top + helpBodyRows() - 1
+    if (row < top) setHelpScroll(row)
+    else if (row > bottom) setHelpScroll(clip(row - helpBodyRows() + 1, 0, Math.max(0, helpRows.length - helpBodyRows())))
+  }
+
+  function moveHelpCursor(delta: number) {
+    const nextIndex = clip(helpCursor() + delta, 0, helpRows.length - 1)
+    setHelpCursor(nextIndex)
+    keepHelpRowVisible(nextIndex)
+  }
+
+  function closeHelp() {
+    setHelpVisible(false)
+  }
+
+  function toggleHelp() {
+    setHelpVisible((visible) => {
+      const next = !visible
+      if (next) keepHelpRowVisible()
+      return next
+    })
+  }
+
+  function diffPanelWidth() {
+    if (!inspect()) return normalWidths().right
+    if (!explanationVisible()) return contentWidth()
+    return inspectLayout() === "side" ? inspectWidths().left : contentWidth()
+  }
+
+  function diffMaxScrollX(innerWidth = Math.max(1, diffPanelWidth() - 6)) {
+    const visibleCodeWidth = Math.max(1, innerWidth - 2)
+    const longest = displayDiffRows().reduce((max, row) => Math.max(max, diffRowContent(row).length), 0)
+    return Math.max(0, longest - visibleCodeWidth)
+  }
+
+  function diffRowContent(row: VisibleDiffLine) {
+    return row.kind === "add" || row.kind === "delete" ? row.line.slice(1) : row.line
+  }
+
+  function clampDiffScrollX(innerWidth?: number) {
+    setDiffScrollX((value) => clip(value, 0, diffMaxScrollX(innerWidth)))
   }
 
   function keepSelectedVisible(nextIndex = index()) {
@@ -196,6 +277,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const nextIndex = displayIndexForBlock(file?.blocks[0])
     setDiffCursor(nextIndex)
     setDiffScroll(clip(nextIndex - 2, 0, diffMaxScroll()))
+    setDiffScrollX(0)
     setExplanationScroll(0)
   }
 
@@ -299,6 +381,11 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     setExplanationScroll((value) => clip(value + delta, 0, explanationMaxScroll()))
   }
 
+  function scrollDiffHorizontal(delta: number) {
+    if (!inspect() || (explanationVisible() && inspectFocus() === "explanation")) return
+    setDiffScrollX((value) => clip(value + delta, 0, diffMaxScrollX()))
+  }
+
   function refresh(preserveID = selected()?.id) {
     setRevision((value) => value + 1)
     if (preserveID) {
@@ -385,6 +472,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   function renderDiffPanel(width: number, layout: PanelLayout = {}) {
     const file = selected()
     const innerWidth = Math.max(1, width - 6)
+    const horizontalScroll = () => clip(diffScrollX(), 0, diffMaxScrollX(innerWidth))
     const showStatus = () => innerWidth > 1
     const statusText = () => (file ? `${fileImpactText(file)} · ${fileApprovalPosition()} · diff ${diffPosition()}` : "")
     const statusWidth = () => (showStatus() ? Math.min(statusText().length, Math.max(1, innerWidth - 1)) : 0)
@@ -402,10 +490,40 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
             <For each={visibleDiffLines()}>{(line) => {
               const active = () => inspect() && line.rowIndex === activeDisplayIndex()
               const explanationRegion = () => inspect() && rowInReviewedExplanationRegion(line)
-              return <DiffLine line={line.line} width={innerWidth} kind={line.kind} active={active()} blockActive={inspect() && rowHasActiveGutter(line)} explanationActive={explanationRegion()} blockResolved={!!activeBlock()?.resolved} path={file.path} filetype={selectedFiletype()} syntaxStyle={syntaxStyle} />
+              return <DiffLine line={line.line} width={innerWidth} scrollX={horizontalScroll()} kind={line.kind} active={active()} blockActive={inspect() && rowHasActiveGutter(line)} explanationActive={explanationRegion()} blockResolved={!!activeBlock()?.resolved} path={file.path} filetype={selectedFiletype()} syntaxStyle={syntaxStyle} />
             }}</For>
           </box>
         ) : <text fg="#8b96b8">No uncommitted Git changes. Make changes, then open Ledger again.</text>}
+      </box>
+    )
+  }
+
+  function renderHelpOverlay() {
+    const maxScroll = Math.max(0, helpRows.length - helpBodyRows())
+    const start = clip(helpScroll(), 0, maxScroll)
+    const visibleRows = helpRows.slice(start, start + helpBodyRows())
+    const sectionWidth = 14
+    const keyWidth = Math.min(18, Math.max(12, Math.floor(helpWidth() * 0.22)))
+    const descWidth = () => Math.max(1, helpWidth() - sectionWidth - keyWidth - 7)
+    const footerText = () => `${clip(helpCursor(), 0, helpRows.length - 1) + 1}/${helpRows.length}   j/k move  ctrl+d/u page  ?/esc close`
+
+    return (
+      <box position="absolute" zIndex={20} left={helpLeft()} top={helpTop()} width={helpWidth()} height={helpHeight()} border borderColor="#86aef5" backgroundColor="#090d16" paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
+        <text fg="#f0f4ff"><b>Ledger Help</b></text>
+        <text fg="#8b96b8"> </text>
+        <For each={visibleRows}>{(row, offset) => {
+          const rowIndex = () => start + offset()
+          const active = () => rowIndex() === helpCursor()
+          return (
+          <box flexDirection="row" overflow="hidden" backgroundColor={active() ? "#86aef5" : undefined}>
+            <text width={sectionWidth} fg={active() ? "#07101f" : "#86aef5"} truncate wrapMode="none">{row.section}</text>
+            <text width={keyWidth} fg={active() ? "#07101f" : "#f0f4ff"} truncate wrapMode="none">{row.keys}</text>
+            <text width={descWidth()} fg={active() ? "#07101f" : "#d5dcf6"} truncate wrapMode="none">{row.desc}</text>
+          </box>
+          )
+        }}</For>
+        <text fg="#8b96b8"> </text>
+        <text fg="#8b96b8" truncate wrapMode="none">{footerText()}</text>
       </box>
     )
   }
@@ -430,10 +548,15 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const handlers: Record<LedgerAction, () => void> = {
       down: () => (inspect() ? (explanationFocused() ? controls.scrollExplanation(1) : controls.scrollDiff(1)) : controls.move(1)),
       up: () => (inspect() ? (explanationFocused() ? controls.scrollExplanation(-1) : controls.scrollDiff(-1)) : controls.move(-1)),
+      nextFile: () => controls.move(1),
+      prevFile: () => controls.move(-1),
+      diffLeft: () => controls.scrollDiffHorizontal(-4),
+      diffRight: () => controls.scrollDiffHorizontal(4),
       diffDown: () => (explanationFocused() ? controls.scrollExplanation(page) : controls.scrollDiff(page)),
       diffUp: () => (explanationFocused() ? controls.scrollExplanation(-page) : controls.scrollDiff(-page)),
       prevBlock: () => controls.jumpBlock(-1),
       nextBlock: () => controls.jumpBlock(1),
+      help: toggleHelp,
       yank: controls.yank,
       approve: controls.approve,
       editor: controls.editor,
@@ -466,6 +589,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       setExplanationScroll(0)
       keepDisplayRowVisible(nextIndex)
     },
+    scrollDiffHorizontal,
     scrollExplanation,
     jumpBlock(delta) {
       if (!inspect()) return
@@ -527,12 +651,14 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       setExplanationScroll(0)
       if (!next) setInspectFocus("diff")
       keepDisplayRowVisible(activeDisplayIndex())
+      clampDiffScrollX()
     },
     layout() {
       if (!inspect() || !explanationVisible()) return
       setInspectLayout((layout) => (layout === "side" ? "bottom" : "side"))
       setExplanationScroll(0)
       keepDisplayRowVisible(activeDisplayIndex())
+      clampDiffScrollX()
     },
     analyze() {
       const file = selected()
@@ -575,6 +701,17 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
 
       const action = ledgerAction(key)
       if (!action) return false
+
+      if (helpVisible() && action !== "help") {
+        if (action === "down") moveHelpCursor(1)
+        else if (action === "up") moveHelpCursor(-1)
+        else if (action === "diffDown") moveHelpCursor(helpBodyRows())
+        else if (action === "diffUp") moveHelpCursor(-helpBodyRows())
+        else if (action === "back" || action === "close" || action === "inspect") closeHelp()
+        key.preventDefault?.()
+        key.stopPropagation?.()
+        return true
+      }
 
       const now = Date.now()
       if (action === lastHandledKey && now - lastHandledAt < 25) {
@@ -627,15 +764,18 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       }}
       width={dim().width}
       height={dim().height}
+      position="relative"
       flexDirection="column"
       paddingTop={1}
       paddingLeft={2}
       paddingRight={2}
       backgroundColor="#070a10"
     >
-      <box flexDirection="row" justifyContent="space-between" paddingBottom={1}>
-        <text fg="#d9e2ff"><b>Ledger</b> <span style={{ fg: "#8b96b8" }}>{approvedBlocks()}/{totalBlocks()} approved</span></text>
-        <box width={headerHelpWidth()} flexDirection="row" justifyContent="flex-end" overflow="hidden">
+      <box height={1} flexDirection="row" alignItems="flex-start" justifyContent="space-between" paddingBottom={0}>
+        <box height={1} flexDirection="row">
+          <text fg="#d9e2ff"><b>Ledger</b> <span style={{ fg: "#8b96b8" }}>{approvedBlocks()}/{totalBlocks()} approved</span></text>
+        </box>
+        <box height={1} width={headerHelpWidth()} flexDirection="row" alignItems="flex-start" justifyContent="flex-end" overflow="hidden">
           <text width={headerHelpTextWidth()} fg={notice()?.fg ?? "#8b96b8"} truncate wrapMode="none">{headerHelpText()}</text>
         </box>
       </box>
@@ -668,6 +808,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
           {renderDiffPanel(normalWidths().right)}
         </box>
       )}
+      <Show when={helpVisible()}>{renderHelpOverlay()}</Show>
     </box>
   )
 }

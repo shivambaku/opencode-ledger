@@ -74,7 +74,7 @@ export type ParsedBlock = {
 }
 
 export type LedgerKey = { name?: string; sequence?: string; ctrl?: boolean; shift?: boolean; preventDefault?: () => void; stopPropagation?: () => void }
-export type LedgerAction = "down" | "up" | "yank" | "approve" | "editor" | "inspect" | "explanation" | "layout" | "diffDown" | "diffUp" | "prevBlock" | "nextBlock" | "analyze" | "analyzeAll" | "stop" | "back" | "close"
+export type LedgerAction = "down" | "up" | "nextFile" | "prevFile" | "diffLeft" | "diffRight" | "yank" | "approve" | "editor" | "inspect" | "explanation" | "layout" | "diffDown" | "diffUp" | "prevBlock" | "nextBlock" | "help" | "analyze" | "analyzeAll" | "stop" | "back" | "close"
 export type InspectFocus = "diff" | "explanation"
 export type InspectLayout = "side" | "bottom"
 export type VisibleDiffKind = "code" | "add" | "delete"
@@ -86,6 +86,7 @@ export type LedgerControls = {
   scopeID(): string
   move(delta: number): void
   scrollDiff(delta: number): void
+  scrollDiffHorizontal(delta: number): void
   scrollExplanation(delta: number): void
   jumpBlock(delta: number): void
   yank(): void

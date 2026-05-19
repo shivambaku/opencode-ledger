@@ -50,6 +50,10 @@ type LedgerActionConfig = {
 export const ledgerActionConfigs = [
   { action: "down", command: "ledger.down", commandKey: "down", desc: "Move", keys: ["j", "down"] },
   { action: "up", command: "ledger.up", commandKey: "up", desc: "Move", keys: ["k", "up"] },
+  { action: "nextFile", command: "ledger.nextFile", commandKey: "shift+j", desc: "Next file", keys: ["shift+j"], aliases: ["J"] },
+  { action: "prevFile", command: "ledger.prevFile", commandKey: "shift+k", desc: "Previous file", keys: ["shift+k"], aliases: ["K"] },
+  { action: "diffLeft", command: "ledger.diffLeft", commandKey: "h", desc: "Scroll left", keys: ["h"] },
+  { action: "diffRight", command: "ledger.diffRight", commandKey: "l", desc: "Scroll right", keys: ["l"] },
   { action: "yank", command: "ledger.yank", commandKey: "y", desc: "Yank diff block", keys: ["y"] },
   { action: "approve", command: "ledger.approve", commandKey: "space", desc: "Toggle approval", keys: ["space"], aliases: [" "] },
   { action: "editor", command: "ledger.editor", commandKey: "e", desc: "Open editor", keys: ["e"] },
@@ -63,6 +67,7 @@ export const ledgerActionConfigs = [
   { action: "diffUp", command: "ledger.diffUp", commandKey: "ctrl+u", desc: "Scroll up", keys: ["ctrl+u"], aliases: ["\u0015"] },
   { action: "prevBlock", command: "ledger.prevBlock", commandKey: "shift+n", desc: "Previous block", keys: ["shift+n"], aliases: ["N"] },
   { action: "nextBlock", command: "ledger.nextBlock", commandKey: "n", desc: "Next block", keys: ["n"] },
+  { action: "help", command: "ledger.help", commandKey: "?", desc: "Show help", keys: ["?"], aliases: ["shift+/"] },
   { action: "back", command: "ledger.back", commandKey: "escape", desc: "Back or close ledger", keys: ["escape"] },
   { action: "close", command: "ledger.close", commandKey: "q", desc: "Close ledger", keys: ["q"] },
 ] satisfies readonly LedgerActionConfig[]
