@@ -1,4 +1,4 @@
-import type { LedgerBlock, LedgerFile } from "./types"
+import type { FileStatus, LedgerBlock, LedgerFile } from "./types"
 import { filename } from "./utils"
 
 export function blockReviewed(block: LedgerBlock) {
@@ -39,6 +39,17 @@ function approvalProgress(file: LedgerFile) {
   return `${complete}/${file.blocks.length || 1}`
 }
 
+function fileStatus(file: LedgerFile): FileStatus {
+  return file.status ?? "modified"
+}
+
+export function fileStatusMark(file: LedgerFile) {
+  const status = fileStatus(file)
+  if (status === "added") return "A"
+  if (status === "deleted") return "D"
+  return "M"
+}
+
 export function lineRangeText(block: LedgerBlock) {
   const start = block.newStart || block.oldStart || 1
   const end = block.newEnd || block.oldEnd || start
@@ -47,7 +58,7 @@ export function lineRangeText(block: LedgerBlock) {
 
 export function fileRow(file: LedgerFile, analyzing: boolean) {
   const impact = analyzing ? "..." : fileImpact(file)
-  return `${approvalProgress(file).padEnd(5)} ${impact.padEnd(6)} ${filename(file.path)}`
+  return `${approvalProgress(file).padEnd(5)} ${impact.padEnd(6)}`
 }
 
 export function blockLabel(file: LedgerFile, block: LedgerBlock) {

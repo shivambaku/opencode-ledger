@@ -103,6 +103,7 @@ function isLedgerFile(value: unknown): value is LedgerFile {
     typeof value.content === "string" &&
     typeof value.patch === "string" &&
     typeof value.hash === "string" &&
+    (value.status === undefined || value.status === "modified" || value.status === "added" || value.status === "deleted") &&
     typeof value.additions === "number" &&
     typeof value.deletions === "number" &&
     typeof value.updatedAt === "number" &&

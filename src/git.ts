@@ -1,6 +1,6 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { readFilesForScope, writeFilesForScope } from "./storage"
-import type { FileDiff, LedgerBlock, LedgerFile, LedgerScope, ParsedBlock } from "./types"
+import type { FileDiff, FileStatus, LedgerBlock, LedgerFile, LedgerScope, ParsedBlock } from "./types"
 import { isRecord, normalizePath, patchHash, readWorkspaceFile, unifiedDiff } from "./utils"
 
 export function parseHunk(line: string) {
@@ -167,6 +167,11 @@ function filePatch(input: FileDiff, path: string, additions: number, deletions: 
   return unifiedDiff(path, input.before, input.after, fallback)
 }
 
+function fileStatus(value: string | undefined): FileStatus {
+  if (value === "added" || value === "deleted") return value
+  return "modified"
+}
+
 function fileFromDiff(input: FileDiff, existing: LedgerFile | undefined, directory: string): LedgerFile | undefined {
   const path = normalizePath(input.file ?? input.path ?? "")
   if (!path) return undefined
@@ -174,12 +179,13 @@ function fileFromDiff(input: FileDiff, existing: LedgerFile | undefined, directo
   const content = readWorkspaceFile(directory, path)
   const additions = Math.max(0, input.additions ?? 0)
   const deletions = Math.max(0, input.deletions ?? 0)
+  const status = fileStatus(input.status)
   const patch = filePatch(input, path, additions, deletions)
   const id = path
   const hash = patchHash(path, patch)
 
   if (existing?.hash === hash && existing.analysis?.hash === hash && existing.blocks.length) {
-    return { ...existing, content, patch, additions, deletions }
+    return { ...existing, content, patch, status, additions, deletions }
   }
 
   const existingBlocks = existingBlockIndex(existing)
@@ -191,6 +197,7 @@ function fileFromDiff(input: FileDiff, existing: LedgerFile | undefined, directo
     content,
     patch,
     hash,
+    status,
     additions,
     deletions,
     updatedAt: existing?.hash === hash ? (existing.updatedAt ?? Date.now()) : Date.now(),

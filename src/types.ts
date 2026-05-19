@@ -18,6 +18,8 @@ export type FileAnalysis = {
   generatedAt: number
 }
 
+export type FileStatus = "modified" | "added" | "deleted"
+
 export type LedgerBlock = {
   id: string
   fileID: string
@@ -42,6 +44,7 @@ export type LedgerFile = {
   content: string
   patch: string
   hash: string
+  status?: FileStatus
   additions: number
   deletions: number
   updatedAt: number

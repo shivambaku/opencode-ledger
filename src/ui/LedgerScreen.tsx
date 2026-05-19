@@ -5,13 +5,13 @@ import type { BoxRenderable } from "@opentui/core"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { abortSession, requestAnalysis } from "../analysis"
 import { blockContainsFileLine, blockForFileLine, blockHunkStart, buildDisplayRows, diffLineForFileLine } from "../display"
-import { blockApproved, blockLabel, blockReviewed, blockStale, codeFiletype, fileApproved, fileImpact, fileNeedsAnalysis, fileNeedsApproval, fileRow, lineRangeText } from "../domain"
+import { blockApproved, blockLabel, blockReviewed, blockStale, codeFiletype, fileApproved, fileImpact, fileNeedsAnalysis, fileNeedsApproval, fileRow, fileStatusMark, lineRangeText } from "../domain"
 import { openEditor } from "../editor"
 import { ledgerAction } from "../keys"
 import { closeLedger, yankBlockToClipboard } from "../runtime"
 import { currentFile, ledgerFiles, ledgerStateVersion, routeScope, setBlockResolved, setFileAnalysisResult, setFileResolved } from "../storage"
 import type { InspectFocus, InspectLayout, LedgerAction, LedgerBlock, LedgerControls, LedgerFile, LedgerNotice, VisibleDiffLine } from "../types"
-import { clip, errorMessage, fileLines, parseRouteParams, splitWidths, wrapText } from "../utils"
+import { clip, errorMessage, fileLines, filename, parseRouteParams, splitWidths, wrapText } from "../utils"
 import { DiffLine } from "./DiffLine"
 import { codeSyntax } from "./styles"
 
@@ -145,10 +145,12 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
   const contentWidth = () => Math.max(1, dim().width - 4)
   const headerTitle = () => `Ledger ${approvedBlocks()}/${totalBlocks()} approved`
+  const headerWidth = () => Math.max(1, contentWidth() - 2)
   const headerHelpText = () => notice()?.text ?? helpText()
-  const headerHelpWidth = () => Math.max(1, contentWidth() - headerTitle().length - 2)
+  const headerHelpWidth = () => Math.max(1, headerWidth() - headerTitle().length - 2)
   const headerHelpTextWidth = () => Math.min(headerHelpText().length, headerHelpWidth())
   const normalWidths = () => splitWidths(contentWidth(), 0.38, 28, 30, 52)
+  const fileListInnerWidth = () => Math.max(1, normalWidths().left - 4)
   const inspectWidths = () => splitWidths(contentWidth(), 0.62, 35, 28)
   const helpWidth = () => Math.min(96, Math.max(44, contentWidth() - 4))
   const helpHeight = () => Math.min(22, Math.max(10, dim().height - 4))
@@ -172,6 +174,14 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
 
   function fileImpactText(file: LedgerFile) {
     return isAnalyzing(file.id) ? "..." : fileImpact(file)
+  }
+
+  function fileStatusColor(file: LedgerFile, muted: boolean) {
+    if (muted) return "#78839f"
+    const mark = fileStatusMark(file)
+    if (mark === "A") return "#65f090"
+    if (mark === "D") return "#ff7aa8"
+    return "#86aef5"
   }
 
   function setAnalyzing(id: string, analyzing: boolean) {
@@ -771,7 +781,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       paddingRight={2}
       backgroundColor="#070a10"
     >
-      <box height={1} flexDirection="row" alignItems="flex-start" justifyContent="space-between" paddingBottom={0}>
+      <box width={headerWidth()} height={1} marginLeft={1} marginRight={1} flexDirection="row" alignItems="flex-start" justifyContent="space-between" paddingBottom={0}>
         <box height={1} flexDirection="row">
           <text fg="#d9e2ff"><b>Ledger</b> <span style={{ fg: "#8b96b8" }}>{approvedBlocks()}/{totalBlocks()} approved</span></text>
         </box>
@@ -798,9 +808,25 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
           <box width={normalWidths().left} flexDirection="column" border borderColor="#86aef5" paddingLeft={1} paddingRight={1}>
             <For each={shownFiles()}>{(file) => {
               const on = () => file.id === selected()?.id
+              const approved = () => fileApproved(file)
+              const muted = () => approved()
+              const additions = () => `+${file.additions}`
+              const deletions = () => `-${file.deletions}`
+              const status = () => fileStatusMark(file)
+              const baseText = () => fileRow(file, isAnalyzingFile(file))
+              const name = () => filename(file.path)
+              const fixedWidth = () => baseText().length + additions().length + deletions().length + 5
+              const nameWidth = () => Math.max(1, fileListInnerWidth() - fixedWidth())
+              const textColor = () => (muted() ? "#78839f" : "#d5dcf6")
+              const addColor = () => (muted() ? "#78839f" : "#65f090")
+              const deleteColor = () => (muted() ? "#78839f" : "#ff7aa8")
               return (
-                <box backgroundColor={on() ? "#86aef5" : undefined}>
-                  <text fg={on() ? "#07101f" : fileApproved(file) ? "#78839f" : "#d5dcf6"}>{fileRow(file, isAnalyzingFile(file))}</text>
+                <box flexDirection="row" overflow="hidden" backgroundColor={on() ? "#1b2540" : undefined}>
+                  <text width={baseText().length + 1} flexShrink={0} fg={muted() ? "#78839f" : "#d5dcf6"} truncate wrapMode="none">{baseText()} </text>
+                  <text width={2} flexShrink={0} fg={fileStatusColor(file, muted())} truncate wrapMode="none">{status()} </text>
+                  <text width={nameWidth()} fg={textColor()} truncate wrapMode="none">{name()}</text>
+                  <text width={additions().length + 1} flexShrink={0} fg={addColor()} truncate wrapMode="none"> {additions()}</text>
+                  <text width={deletions().length + 1} flexShrink={0} fg={deleteColor()} truncate wrapMode="none"> {deletions()}</text>
                 </box>
               )
             }}</For>
