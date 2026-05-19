@@ -622,7 +622,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       const file = selected()
       const block = activeBlock()
       if (!file) return
-      if (inspect() && block) {
+      if (inspect()) {
+        if (!block) return
         const previousRow = activeDisplayRow()
         const previousIndex = activeDisplayIndex()
         const nextResolved = !block.resolved
