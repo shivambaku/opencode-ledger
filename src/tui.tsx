@@ -62,12 +62,19 @@ const tui: TuiPlugin = async (api) => {
 
   const runKey = (name: string) => () => controls?.handleKey({ name })
   api.keymap.registerLayer({
-    enabled: () => activeLedger(api),
+    enabled: () => activeLedger(api) && !controls?.commentEditing(),
     priority: 1000,
     commands: [
       ...ledgerActionConfigs.map((item) => ({ name: item.command, run: runKey(item.commandKey) })),
     ],
     bindings: ledgerKeyBindings.map((item) => ({ key: item.key, cmd: command[item.action], desc: item.desc })),
+  })
+
+  api.keymap.registerLayer({
+    enabled: () => activeLedger(api) && !!controls?.commentEditing(),
+    priority: 1001,
+    commands: [{ name: "ledger.comment.cancel", run: () => controls?.cancelComment() }],
+    bindings: [{ key: "escape", cmd: "ledger.comment.cancel", desc: "Cancel comment" }],
   })
 
   api.event.on("session.diff", () => {

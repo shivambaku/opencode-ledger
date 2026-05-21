@@ -1,8 +1,9 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { spawn } from "node:child_process"
 import { ROUTE } from "./constants"
+import { blockComment, blockHasUnresolvedComment, blockLabel } from "./domain"
 import { parseHunk } from "./git"
-import type { LedgerBlock } from "./types"
+import type { LedgerBlock, LedgerFile } from "./types"
 import { parseRouteParams } from "./utils"
 
 function writeOsc52(text: string) {
@@ -67,12 +68,23 @@ export function closeLedger(api: TuiPluginApi) {
   else api.route.navigate("home")
 }
 
-export async function yankBlockToClipboard(api: TuiPluginApi, block: LedgerBlock) {
-  const body = block.patch
+function blockDiffBody(block: LedgerBlock) {
+  return block.patch
     .split("\n")
     .filter((line) => !parseHunk(line))
     .join("\n")
     .trimEnd()
+}
+
+function formatCommentedBlock(file: LedgerFile, block: LedgerBlock) {
+  const comment = blockComment(block)
+  const body = blockDiffBody(block)
+  if (!comment) return body
+  return `${blockLabel(file, block)}\n\nComment:\n${comment}\n\nDiff:\n${body}`
+}
+
+async function writeClipboard(api: TuiPluginApi, body: string) {
+  if (!body) return false
 
   let renderer = false
   try {
@@ -81,4 +93,14 @@ export async function yankBlockToClipboard(api: TuiPluginApi, block: LedgerBlock
   const osc52 = renderer ? false : writeOsc52(body)
   const native = await writeNativeClipboard(body)
   return renderer || osc52 || native
+}
+
+export async function yankBlockToClipboard(api: TuiPluginApi, file: LedgerFile, block: LedgerBlock) {
+  return writeClipboard(api, formatCommentedBlock(file, block))
+}
+
+export async function yankUnresolvedCommentsToClipboard(api: TuiPluginApi, files: LedgerFile[]) {
+  const blocks = files.flatMap((file) => file.blocks.filter(blockHasUnresolvedComment).map((block) => ({ file, block })))
+  const body = blocks.map(({ file, block }) => formatCommentedBlock(file, block)).join("\n\n---\n\n")
+  return { count: blocks.length, ok: await writeClipboard(api, `# Ledger Comments\n\n${body}`) }
 }

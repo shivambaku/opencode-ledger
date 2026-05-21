@@ -13,6 +13,15 @@ export function blockApproved(block: LedgerBlock) {
   return block.resolved
 }
 
+export function blockComment(block: LedgerBlock) {
+  const comment = block.comment?.trim()
+  return comment || undefined
+}
+
+export function blockHasUnresolvedComment(block: LedgerBlock) {
+  return !block.resolved && !!blockComment(block)
+}
+
 function fileAnalyzed(file: LedgerFile) {
   return file.analysis?.hash === file.hash && file.blocks.every(blockReviewed)
 }
@@ -27,6 +36,10 @@ export function fileNeedsApproval(file: LedgerFile) {
 
 export function fileApproved(file: LedgerFile) {
   return !fileNeedsApproval(file)
+}
+
+export function unresolvedCommentCount(files: LedgerFile[]) {
+  return files.reduce((sum, file) => sum + file.blocks.filter(blockHasUnresolvedComment).length, 0)
 }
 
 export function fileImpact(file: LedgerFile) {

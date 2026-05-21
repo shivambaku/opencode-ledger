@@ -1,15 +1,15 @@
 /** @jsxImportSource @opentui/solid */
 import { useTerminalDimensions } from "@opentui/solid"
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
-import type { BoxRenderable } from "@opentui/core"
+import type { BoxRenderable, KeyEvent, TextareaOptions, TextareaRenderable } from "@opentui/core"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { abortSession, requestAnalysis } from "../analysis"
 import { blockContainsFileLine, blockForFileLine, blockHunkStart, buildDisplayRows, diffLineForFileLine } from "../display"
-import { blockApproved, blockLabel, blockReviewed, blockStale, codeFiletype, fileApproved, fileImpact, fileNeedsAnalysis, fileNeedsApproval, fileRow, fileStatusMark, lineRangeText } from "../domain"
+import { blockApproved, blockComment, blockLabel, blockReviewed, blockStale, codeFiletype, fileApproved, fileImpact, fileNeedsAnalysis, fileNeedsApproval, fileRow, fileStatusMark, lineRangeText, unresolvedCommentCount } from "../domain"
 import { openEditor } from "../editor"
 import { ledgerAction } from "../keys"
-import { closeLedger, yankBlockToClipboard } from "../runtime"
-import { currentFile, ledgerFiles, ledgerStateVersion, routeScope, setBlockResolved, setFileAnalysisResult, setFileResolved } from "../storage"
+import { closeLedger, yankBlockToClipboard, yankUnresolvedCommentsToClipboard } from "../runtime"
+import { currentFile, ledgerFiles, ledgerStateVersion, routeScope, setBlockComment, setBlockResolved, setFileAnalysisResult, setFileResolved } from "../storage"
 import type { InspectFocus, InspectLayout, LedgerAction, LedgerBlock, LedgerControls, LedgerFile, LedgerNotice, VisibleDiffLine } from "../types"
 import { clip, errorMessage, fileLines, filename, parseRouteParams, splitWidths, wrapText } from "../utils"
 import { DiffLine } from "./DiffLine"
@@ -19,6 +19,78 @@ type ExplanationRow = { text: string; muted?: boolean; fg?: string }
 type HelpRow = { section: string; keys: string; desc: string }
 type PanelLayout = { height?: number; flexGrow?: number; flexShrink?: number; flexBasis?: number | "auto"; minHeight?: number }
 type LedgerExplanation = NonNullable<LedgerBlock["review"]>["explanations"][number]
+type CommentEditorState = { file: LedgerFile; block: LedgerBlock; hadComment: boolean }
+
+const commentKeyBindings = [
+  { name: "return", action: "submit" },
+  { name: "return", shift: true, action: "newline" },
+  { name: "enter", action: "submit" },
+  { name: "enter", shift: true, action: "newline" },
+  { name: "j", ctrl: true, action: "newline" },
+] satisfies NonNullable<TextareaOptions["keyBindings"]>
+
+function CommentDialog(props: { title: string; initialValue: string; onSave(value: string): void; onCancel(): void }) {
+  let textarea: TextareaRenderable | undefined
+  const dim = useTerminalDimensions()
+  const [draft, setDraft] = createSignal(props.initialValue)
+  const width = () => Math.min(96, Math.max(44, dim().width - 8))
+  const height = () => Math.min(18, Math.max(10, dim().height - 6))
+  const innerWidth = () => Math.max(1, width() - 4)
+  const bodyHeight = () => Math.max(3, height() - 7)
+  const left = () => Math.max(0, Math.floor((dim().width - width()) / 2))
+  const top = () => Math.max(1, Math.floor((dim().height - height()) / 2))
+
+  function save() {
+    props.onSave(textarea?.plainText ?? draft())
+  }
+
+  function handleKey(event: KeyEvent) {
+    if (event.name !== "escape") return
+    event.preventDefault()
+    event.stopPropagation()
+    props.onCancel()
+  }
+
+  onMount(() => {
+    setTimeout(() => {
+      if (!textarea) return
+      textarea.focus()
+      textarea.cursorOffset = textarea.plainText.length
+    }, 0)
+  })
+
+  return (
+    <box position="absolute" zIndex={20} left={left()} top={top()} width={width()} height={height()} border borderColor="#86aef5" backgroundColor="#090d16" paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
+      <text width={innerWidth()} fg="#f0f4ff" truncate wrapMode="none"><b>{props.title}</b></text>
+      <text fg="#8b96b8"> </text>
+      <box width={innerWidth()} height={bodyHeight()} overflow="hidden">
+        <textarea
+          ref={(node) => {
+            textarea = node
+          }}
+          focused
+          showCursor
+          width={innerWidth()}
+          height={bodyHeight()}
+          initialValue={props.initialValue}
+          wrapMode="word"
+          textColor="#d5dcf6"
+          focusedTextColor="#f0f4ff"
+          backgroundColor="#090d16"
+          focusedBackgroundColor="#090d16"
+          placeholder="Add a comment for this block..."
+          placeholderColor="#5e6a86"
+          keyBindings={commentKeyBindings}
+          onSubmit={save}
+          onContentChange={setDraft}
+          onKeyPress={handleKey}
+        />
+      </box>
+      <text fg="#8b96b8"> </text>
+      <text width={innerWidth()} fg="#8b96b8" truncate wrapMode="none">enter save   shift+enter newline   esc cancel</text>
+    </box>
+  )
+}
 
 const helpRows: HelpRow[] = [
   { section: "File View", keys: "j / k", desc: "Move file selection" },
@@ -26,6 +98,7 @@ const helpRows: HelpRow[] = [
   { section: "File View", keys: "space", desc: "Toggle selected file approval" },
   { section: "File View", keys: "a", desc: "Analyze selected file" },
   { section: "File View", keys: "A", desc: "Analyze all pending files" },
+  { section: "File View", keys: "Y", desc: "Yank unresolved comments" },
   { section: "File View", keys: "x", desc: "Stop analysis" },
   { section: "Diff View", keys: "j / k", desc: "Move diff cursor" },
   { section: "Diff View", keys: "h / l", desc: "Scroll diff horizontally" },
@@ -35,7 +108,9 @@ const helpRows: HelpRow[] = [
   { section: "Diff View", keys: "tab", desc: "Show or hide explanation" },
   { section: "Diff View", keys: "enter", desc: "Focus explanation when visible" },
   { section: "Diff View", keys: "|", desc: "Toggle explanation layout" },
+  { section: "Diff View", keys: "c", desc: "Add or edit active block comment" },
   { section: "Diff View", keys: "y", desc: "Yank active block" },
+  { section: "Diff View", keys: "Y", desc: "Yank unresolved comments" },
   { section: "Diff View", keys: "e", desc: "Open editor at active block" },
   { section: "Diff View", keys: "esc", desc: "Return to file view" },
   { section: "Explanation", keys: "j / k", desc: "Scroll explanation" },
@@ -66,6 +141,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   const [helpCursor, setHelpCursor] = createSignal(0)
   const [helpScroll, setHelpScroll] = createSignal(0)
   const [inspect, setInspect] = createSignal(false)
+  const [commentEditor, setCommentEditor] = createSignal<CommentEditorState | undefined>()
   const [revision, setRevision] = createSignal(0)
   const [analyzingIDs, setAnalyzingIDs] = createSignal<Set<string>>(new Set())
   const [notice, setNotice] = createSignal<LedgerNotice | undefined>()
@@ -78,6 +154,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   })
   const approvedBlocks = createMemo(() => files().reduce((sum, file) => sum + file.blocks.filter(blockApproved).length, 0))
   const totalBlocks = createMemo(() => files().reduce((sum, file) => sum + file.blocks.length, 0))
+  const commentCount = createMemo(() => unresolvedCommentCount(files()))
   const visibleRows = () => Math.max(5, dim().height - 7)
   const inspectRows = () => Math.max(8, dim().height - 7)
   const bottomExplanationHeight = () => clip(Math.floor(inspectRows() * 0.38), 4, Math.max(4, inspectRows() - 5))
@@ -144,7 +221,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     return `approved ${file.blocks.filter(blockApproved).length}/${file.blocks.length}`
   }
   const contentWidth = () => Math.max(1, dim().width - 4)
-  const headerTitle = () => `Ledger ${approvedBlocks()}/${totalBlocks()} approved`
+  const commentCountText = () => (commentCount() ? ` · ${commentCount()} ${commentCount() === 1 ? "comment" : "comments"}` : "")
+  const headerTitle = () => `Ledger ${approvedBlocks()}/${totalBlocks()} approved${commentCountText()}`
   const headerWidth = () => Math.max(1, contentWidth() - 2)
   const headerHelpText = () => notice()?.text ?? helpText()
   const headerHelpWidth = () => Math.max(1, headerWidth() - headerTitle().length - 2)
@@ -348,8 +426,10 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const block = activeBlock()
     if (!file || !block) return [{ text: "No block selected.", muted: true }]
 
+    const comment = blockComment(block)
     return [
-      { text: `Block ${lineRangeText(block)} ${block.resolved ? "approved" : "needs approval"}`, fg: block.resolved ? "#3ee06f" : "#86aef5" },
+      { text: `Block ${lineRangeText(block)} ${block.resolved ? "approved" : "needs approval"}${comment ? " · commented" : ""}`, fg: block.resolved ? "#3ee06f" : "#86aef5" },
+      ...(comment ? [{ text: "Comment", muted: true }, ...wrapText(comment, width).map((text) => ({ text, muted: true }))] : []),
       { text: " " },
       ...explanationBodyRows(file, block, width),
     ]
@@ -418,6 +498,19 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     if (file && block) action(file, block)
   }
 
+  function openBlockCommentEditor(file: LedgerFile, block: LedgerBlock) {
+    root?.blur()
+    setCommentEditor({ file, block, hadComment: !!blockComment(block) })
+  }
+
+  function saveBlockComment(editor: CommentEditorState, value: string) {
+    const comment = value.trim() ? value.trim() : undefined
+    setBlockComment(scope(), editor.file.id, editor.block.id, comment)
+    setCommentEditor(undefined)
+    refresh(editor.file.id)
+    showLedgerNotice(comment ? `${editor.hadComment ? "Updated" : "Saved"} comment for ${blockLabel(editor.file, editor.block)}.` : `Cleared comment for ${blockLabel(editor.file, editor.block)}.`, comment ? "#3ee06f" : "#8b96b8")
+  }
+
   async function analyzeFile(fileID: string, token: number) {
     const fileScope = scope()
     const file = currentFile(fileScope, fileID)
@@ -484,7 +577,11 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const innerWidth = Math.max(1, width - 6)
     const horizontalScroll = () => clip(diffScrollX(), 0, diffMaxScrollX(innerWidth))
     const showStatus = () => innerWidth > 1
-    const statusText = () => (file ? `${fileImpactText(file)} · ${fileApprovalPosition()} · diff ${diffPosition()}` : "")
+    const activeCommentText = () => {
+      const block = activeBlock()
+      return inspect() && block && blockComment(block) ? "commented · " : ""
+    }
+    const statusText = () => (file ? `${activeCommentText()}${fileImpactText(file)} · ${fileApprovalPosition()} · diff ${diffPosition()}` : "")
     const statusWidth = () => (showStatus() ? Math.min(statusText().length, Math.max(1, innerWidth - 1)) : 0)
     const pathWidth = () => Math.max(1, innerWidth - statusWidth())
     return (
@@ -568,6 +665,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       nextBlock: () => controls.jumpBlock(1),
       help: toggleHelp,
       yank: controls.yank,
+      yankComments: controls.yankComments,
+      comment: controls.comment,
       approve: controls.approve,
       editor: controls.editor,
       inspect: controls.inspect,
@@ -584,6 +683,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
 
   const controls: LedgerControls = {
     scopeID,
+    commentEditing: () => !!commentEditor(),
+    cancelComment: () => setCommentEditor(undefined),
     move(delta) {
       if (!files().length) return
       const nextIndex = clip(index() + delta, 0, files().length - 1)
@@ -614,12 +715,31 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
         return
       }
       withActiveBlock((file, block) => {
-        void yankBlockToClipboard(props.api, block)
+        void yankBlockToClipboard(props.api, file, block)
           .then((ok) => {
             showLedgerNotice(ok ? `Yanked ${blockLabel(file, block)}.` : "Clipboard unavailable.", ok ? "#3ee06f" : "#f6b26b")
           })
           .catch((error) => showLedgerNotice(errorMessage(error), "#f6b26b"))
       })
+    },
+    yankComments() {
+      const count = commentCount()
+      if (!count) {
+        showLedgerNotice("No unresolved blocks with comments.")
+        return
+      }
+      void yankUnresolvedCommentsToClipboard(props.api, files())
+        .then((result) => {
+          showLedgerNotice(result.ok ? `Yanked ${result.count} unresolved commented ${result.count === 1 ? "block" : "blocks"}.` : "Clipboard unavailable.", result.ok ? "#3ee06f" : "#f6b26b")
+        })
+        .catch((error) => showLedgerNotice(errorMessage(error), "#f6b26b"))
+    },
+    comment() {
+      if (!inspect()) {
+        showLedgerNotice("Enter inspect mode to add a comment.")
+        return
+      }
+      withActiveBlock(openBlockCommentEditor)
     },
     approve() {
       const file = selected()
@@ -774,6 +894,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       focused
       focusable
       renderAfter={() => {
+        if (commentEditor()) return
         if (!props.api.ui.dialog.open && !root?.focused) root?.focus()
       }}
       width={dim().width}
@@ -787,7 +908,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     >
       <box width={headerWidth()} height={1} marginLeft={1} marginRight={1} flexDirection="row" alignItems="flex-start" justifyContent="space-between" paddingBottom={0}>
         <box height={1} flexDirection="row">
-          <text fg="#d9e2ff"><b>Ledger</b> <span style={{ fg: "#8b96b8" }}>{approvedBlocks()}/{totalBlocks()} approved</span></text>
+          <text fg="#d9e2ff"><b>Ledger</b> <span style={{ fg: "#8b96b8" }}>{approvedBlocks()}/{totalBlocks()} approved{commentCountText()}</span></text>
         </box>
         <box height={1} width={headerHelpWidth()} flexDirection="row" alignItems="flex-start" justifyContent="flex-end" overflow="hidden">
           <text width={headerHelpTextWidth()} fg={notice()?.fg ?? "#8b96b8"} truncate wrapMode="none">{headerHelpText()}</text>
@@ -839,6 +960,14 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
         </box>
       )}
       <Show when={helpVisible()}>{renderHelpOverlay()}</Show>
+      <Show when={commentEditor()}>{(editor) => (
+        <CommentDialog
+          title={`Comment for ${blockLabel(editor().file, editor().block)}`}
+          initialValue={editor().block.comment ?? ""}
+          onSave={(value) => saveBlockComment(editor(), value)}
+          onCancel={() => setCommentEditor(undefined)}
+        />
+      )}</Show>
     </box>
   )
 }

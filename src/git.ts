@@ -156,6 +156,7 @@ function blockFromParsed(fileID: string, path: string, block: ParsedBlock, index
     additions: block.additions,
     deletions: block.deletions,
     resolved: unchanged ? (previous?.resolved ?? false) : false,
+    comment: unchanged ? previous?.comment : undefined,
     updatedAt: unchanged ? (previous?.updatedAt ?? now) : now,
     review: unchanged ? previous?.review : undefined,
   }

@@ -55,6 +55,8 @@ export const ledgerActionConfigs = [
   { action: "diffLeft", command: "ledger.diffLeft", commandKey: "h", desc: "Scroll left", keys: ["h"] },
   { action: "diffRight", command: "ledger.diffRight", commandKey: "l", desc: "Scroll right", keys: ["l"] },
   { action: "yank", command: "ledger.yank", commandKey: "y", desc: "Yank diff block", keys: ["y"] },
+  { action: "yankComments", command: "ledger.yankComments", commandKey: "shift+y", desc: "Yank unresolved comments", keys: ["shift+y"], aliases: ["Y"] },
+  { action: "comment", command: "ledger.comment", commandKey: "c", desc: "Add or edit comment", keys: ["c"] },
   { action: "approve", command: "ledger.approve", commandKey: "space", desc: "Toggle approval", keys: ["space"], aliases: [" "] },
   { action: "editor", command: "ledger.editor", commandKey: "e", desc: "Open editor", keys: ["e"] },
   { action: "inspect", command: "ledger.inspect", commandKey: "enter", desc: "Toggle inspect/focus", keys: ["enter"], aliases: ["return"] },

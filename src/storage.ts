@@ -73,7 +73,7 @@ function mergeFileState(incoming: LedgerFile, latest: LedgerFile | undefined) {
     const current = latestBlocks.get(block.id)
     if (!current || current.hash !== block.hash) return block
     const review = current.review?.hash === block.hash && (!block.review || current.review.generatedAt > block.review.generatedAt) ? current.review : block.review
-    return current.updatedAt > block.updatedAt ? { ...block, resolved: current.resolved, updatedAt: current.updatedAt, review } : { ...block, review }
+    return current.updatedAt > block.updatedAt ? { ...block, resolved: current.resolved, comment: current.comment, updatedAt: current.updatedAt, review } : { ...block, review }
   })
 
   const analysis = latest.analysis?.hash === incoming.hash && (!incoming.analysis || latest.analysis.generatedAt > incoming.analysis.generatedAt) ? latest.analysis : incoming.analysis
@@ -134,6 +134,7 @@ function isLedgerBlock(value: unknown): value is LedgerBlock {
     typeof value.additions === "number" &&
     typeof value.deletions === "number" &&
     typeof value.resolved === "boolean" &&
+    (value.comment === undefined || typeof value.comment === "string") &&
     typeof value.updatedAt === "number" &&
     (value.review === undefined || isBlockReview(value.review))
   )
@@ -207,6 +208,10 @@ export function currentFile(scope: LedgerScope, id: string) {
 
 export function setBlockResolved(scope: LedgerScope, fileID: string, blockID: string, resolved: boolean) {
   updateBlock(scope, fileID, blockID, (block) => ({ ...block, resolved, updatedAt: Date.now() }))
+}
+
+export function setBlockComment(scope: LedgerScope, fileID: string, blockID: string, comment: string | undefined) {
+  updateBlock(scope, fileID, blockID, (block) => ({ ...block, comment, updatedAt: Date.now() }))
 }
 
 export function setFileResolved(scope: LedgerScope, fileID: string, resolved: boolean) {
