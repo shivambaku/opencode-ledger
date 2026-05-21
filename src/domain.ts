@@ -69,8 +69,8 @@ export function lineRangeText(block: LedgerBlock) {
   return `${start}-${Math.max(start, end)}`
 }
 
-export function fileRow(file: LedgerFile, analyzing: boolean) {
-  const impact = analyzing ? "..." : fileImpact(file)
+export function fileRow(file: LedgerFile, analyzing: boolean, analyzingText = "...") {
+  const impact = analyzing ? analyzingText : fileImpact(file)
   return `${approvalProgress(file).padEnd(5)} ${impact.padEnd(6)}`
 }
 

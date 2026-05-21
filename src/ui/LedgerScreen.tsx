@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import type { BoxRenderable, KeyEvent, TextareaOptions, TextareaRenderable } from "@opentui/core"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { abortSession, requestAnalysis } from "../analysis"
@@ -20,6 +20,10 @@ type HelpRow = { section: string; keys: string; desc: string }
 type PanelLayout = { height?: number; flexGrow?: number; flexShrink?: number; flexBasis?: number | "auto"; minHeight?: number }
 type LedgerExplanation = NonNullable<LedgerBlock["review"]>["explanations"][number]
 type CommentEditorState = { file: LedgerFile; block: LedgerBlock; hadComment: boolean }
+
+function analyzingDots(frame: number) {
+  return ".".repeat((frame % 3) + 1)
+}
 
 const commentKeyBindings = [
   { name: "return", action: "submit" },
@@ -144,6 +148,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   const [commentEditor, setCommentEditor] = createSignal<CommentEditorState | undefined>()
   const [revision, setRevision] = createSignal(0)
   const [analyzingIDs, setAnalyzingIDs] = createSignal<Set<string>>(new Set())
+  const [analyzingFrame, setAnalyzingFrame] = createSignal(0)
   const [notice, setNotice] = createSignal<LedgerNotice | undefined>()
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
   const scope = createMemo(() => routeScope(props.api, route.directory))
@@ -238,6 +243,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
 
   let analysisToken = 0
   let statePollTimer: ReturnType<typeof setInterval> | undefined
+  let analyzingFrameTimer: ReturnType<typeof setInterval> | undefined
   let lastStateVersion = 0
   const activeAnalysisSessions = new Set<string>()
   const ANALYSIS_CONCURRENCY = 2
@@ -250,8 +256,16 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     return analyzingIDs().has(id)
   }
 
+  function analyzingText() {
+    return analyzingDots(analyzingFrame())
+  }
+
+  function fixedAnalyzingText() {
+    return analyzingText().padEnd(3)
+  }
+
   function fileImpactText(file: LedgerFile) {
-    return isAnalyzing(file.id) ? "..." : fileImpact(file)
+    return isAnalyzing(file.id) ? fixedAnalyzingText() : fileImpact(file)
   }
 
   function fileStatusColor(file: LedgerFile, muted: boolean) {
@@ -270,6 +284,17 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       return next
     })
   }
+
+  createEffect(() => {
+    const active = analyzingIDs().size > 0
+    if (active && !analyzingFrameTimer) {
+      analyzingFrameTimer = setInterval(() => setAnalyzingFrame((frame) => frame + 1), 400)
+    } else if (!active && analyzingFrameTimer) {
+      clearInterval(analyzingFrameTimer)
+      analyzingFrameTimer = undefined
+      setAnalyzingFrame(0)
+    }
+  })
 
   function showLedgerNotice(text: string, fg = "#8b96b8") {
     if (noticeTimer) clearTimeout(noticeTimer)
@@ -882,6 +907,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
 
   onCleanup(() => {
     if (statePollTimer) clearInterval(statePollTimer)
+    if (analyzingFrameTimer) clearInterval(analyzingFrameTimer)
     if (noticeTimer) clearTimeout(noticeTimer)
     props.registerControls(undefined)
   })
@@ -938,7 +964,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
               const additions = () => `+${file.additions}`
               const deletions = () => `-${file.deletions}`
               const status = () => fileStatusMark(file)
-              const baseText = () => fileRow(file, isAnalyzingFile(file))
+              const baseText = () => fileRow(file, isAnalyzingFile(file), analyzingText())
               const name = () => filename(file.path)
               const fixedWidth = () => baseText().length + additions().length + deletions().length + 5
               const nameWidth = () => Math.max(1, fileListInnerWidth() - fixedWidth())
