@@ -36,6 +36,16 @@ export const REVIEW_SCHEMA = {
   required: ["impact", "hunks"],
 }
 
+export const COMMIT_MESSAGE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    title: { type: "string" },
+    body: { type: "string" },
+  },
+  required: ["title", "body"],
+}
+
 export const impactRank: Record<Impact, number> = { high: 0, medium: 1, low: 2 }
 
 type LedgerActionConfig = {
@@ -64,6 +74,7 @@ export const ledgerActionConfigs = [
   { action: "layout", command: "ledger.layout", commandKey: "|", desc: "Toggle layout", keys: ["|"] },
   { action: "analyze", command: "ledger.analyze", commandKey: "a", desc: "Analyze file", keys: ["a"] },
   { action: "analyzeAll", command: "ledger.analyzeAll", commandKey: "shift+a", desc: "Analyze pending files", keys: ["shift+a"], aliases: ["A"] },
+  { action: "commitMessage", command: "ledger.commitMessage", commandKey: "m", desc: "Generate commit message", keys: ["m"] },
   { action: "stop", command: "ledger.stop", commandKey: "x", desc: "Stop analysis", keys: ["x"] },
   { action: "diffDown", command: "ledger.diffDown", commandKey: "ctrl+d", desc: "Scroll down", keys: ["ctrl+d"], aliases: ["\u0004"] },
   { action: "diffUp", command: "ledger.diffUp", commandKey: "ctrl+u", desc: "Scroll up", keys: ["ctrl+u"], aliases: ["\u0015"] },

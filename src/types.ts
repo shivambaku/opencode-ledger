@@ -23,6 +23,17 @@ export type FileAnalysis = {
   generatedAt: number
 }
 
+export type CommitMessageQuality = "full" | "partial" | "diff-only"
+
+export type CommitMessageResult = {
+  title: string
+  body: string
+  text: string
+  quality: CommitMessageQuality
+  analyzedFiles: number
+  totalFiles: number
+}
+
 export type FileStatus = "modified" | "added" | "deleted"
 
 export type LedgerBlock = {
@@ -83,7 +94,7 @@ export type ParsedBlock = {
 }
 
 export type LedgerKey = { name?: string; sequence?: string; ctrl?: boolean; shift?: boolean; preventDefault?: () => void; stopPropagation?: () => void }
-export type LedgerAction = "down" | "up" | "nextFile" | "prevFile" | "diffLeft" | "diffRight" | "yank" | "yankComments" | "comment" | "approve" | "editor" | "inspect" | "explanation" | "layout" | "diffDown" | "diffUp" | "prevBlock" | "nextBlock" | "help" | "analyze" | "analyzeAll" | "stop" | "back" | "close"
+export type LedgerAction = "down" | "up" | "nextFile" | "prevFile" | "diffLeft" | "diffRight" | "yank" | "yankComments" | "comment" | "approve" | "editor" | "inspect" | "explanation" | "layout" | "diffDown" | "diffUp" | "prevBlock" | "nextBlock" | "help" | "analyze" | "analyzeAll" | "commitMessage" | "stop" | "back" | "close"
 export type InspectFocus = "diff" | "explanation"
 export type InspectLayout = "side" | "bottom"
 export type VisibleDiffKind = "code" | "add" | "delete"
@@ -110,6 +121,7 @@ export type LedgerControls = {
   layout(): void
   analyze(): void
   analyzeAll(): void
+  commitMessage(): void
   stop(): void
   back(): void
   close(): void

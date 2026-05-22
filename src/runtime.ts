@@ -83,7 +83,7 @@ function formatCommentedBlock(file: LedgerFile, block: LedgerBlock) {
   return `${blockLabel(file, block)}\n\nComment:\n${comment}\n\nDiff:\n${body}`
 }
 
-async function writeClipboard(api: TuiPluginApi, body: string) {
+export async function writeClipboard(api: TuiPluginApi, body: string) {
   if (!body) return false
 
   let renderer = false

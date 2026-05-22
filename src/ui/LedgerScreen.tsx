@@ -3,12 +3,12 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import type { BoxRenderable, KeyEvent, TextareaOptions, TextareaRenderable } from "@opentui/core"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { abortSession, deleteSession, requestAnalysis } from "../analysis"
+import { abortSession, deleteSession, requestAnalysis, requestCommitMessage } from "../analysis"
 import { blockContainsFileLine, blockForFileLine, blockHunkStart, buildDisplayRows, diffLineForFileLine } from "../display"
 import { blockApproved, blockComment, blockLabel, blockReviewed, blockStale, codeFiletype, fileApproved, fileImpact, fileNeedsAnalysis, fileNeedsApproval, fileRow, fileStatusMark, lineRangeText, unresolvedCommentCount } from "../domain"
 import { openEditor } from "../editor"
 import { ledgerAction } from "../keys"
-import { closeLedger, yankBlockToClipboard, yankUnresolvedCommentsToClipboard } from "../runtime"
+import { closeLedger, writeClipboard, yankBlockToClipboard, yankUnresolvedCommentsToClipboard } from "../runtime"
 import { currentFile, ledgerFiles, ledgerStateVersion, routeScope, setBlockComment, setBlockResolved, setFileAnalysisResult, setFileResolved } from "../storage"
 import type { InspectFocus, InspectLayout, LedgerAction, LedgerBlock, LedgerControls, LedgerFile, LedgerNotice, VisibleDiffLine } from "../types"
 import { clip, errorMessage, fileLines, filename, parseRouteParams, splitWidths, wrapText } from "../utils"
@@ -123,6 +123,7 @@ const helpRows: HelpRow[] = [
   { section: "Explanation", keys: "tab", desc: "Hide explanation" },
   { section: "Explanation", keys: "esc", desc: "Return focus to diff" },
   { section: "General", keys: "J / K", desc: "Next or previous file" },
+  { section: "General", keys: "m", desc: "Generate commit message" },
   { section: "General", keys: "?", desc: "Toggle help" },
   { section: "General", keys: "q", desc: "Close ledger" },
 ]
@@ -148,6 +149,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   const [commentEditor, setCommentEditor] = createSignal<CommentEditorState | undefined>()
   const [revision, setRevision] = createSignal(0)
   const [analyzingIDs, setAnalyzingIDs] = createSignal<Set<string>>(new Set())
+  const [generatingCommitMessage, setGeneratingCommitMessage] = createSignal(false)
   const [analyzingFrame, setAnalyzingFrame] = createSignal(0)
   const [notice, setNotice] = createSignal<LedgerNotice | undefined>()
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
@@ -586,6 +588,45 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     })
   }
 
+  function commitMessageContextText(result: Awaited<ReturnType<typeof requestCommitMessage>>) {
+    if (result.quality === "full") return "full analysis"
+    if (result.quality === "partial") return `partial analysis ${result.analyzedFiles}/${result.totalFiles}`
+    return "diff only"
+  }
+
+  async function generateCommitMessage(token: number) {
+    if (generatingCommitMessage()) {
+      showLedgerNotice("Commit message is already generating. Press x to stop it.")
+      return
+    }
+
+    const fileScope = scope()
+    setGeneratingCommitMessage(true)
+    showLedgerNotice("Generating commit message...")
+    let sessionID: string | undefined
+    try {
+      await props.reconcileWorkspace(route.directory)
+      if (token !== analysisToken) return
+      refresh()
+      const result = await requestCommitMessage(props.api, fileScope, ledgerFiles(fileScope), () => token === analysisToken, props.analysisModel, (id) => {
+        sessionID = id
+        activeAnalysisSessions.add(id)
+      })
+      if (token !== analysisToken) return
+      const ok = await writeClipboard(props.api, result.text)
+      const context = commitMessageContextText(result)
+      showLedgerNotice(ok ? `Yanked commit message (${context}).` : `Generated commit message (${context}), but clipboard unavailable.`, ok ? "#3ee06f" : "#f6b26b")
+    } catch (error) {
+      if (token === analysisToken) showLedgerNotice(errorMessage(error), "#f6b26b")
+    } finally {
+      if (sessionID) {
+        activeAnalysisSessions.delete(sessionID)
+        await deleteSession(props.api, fileScope, sessionID)
+      }
+      setGeneratingCommitMessage(false)
+    }
+  }
+
   function deferAnalysis(work: () => void) {
     setTimeout(work, 25)
   }
@@ -596,6 +637,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const sessions = [...activeAnalysisSessions]
     activeAnalysisSessions.clear()
     setAnalyzingIDs(new Set<string>())
+    setGeneratingCommitMessage(false)
     await Promise.all(sessions.map(async (sessionID) => {
       await abortSession(props.api, currentScope, sessionID)
       await deleteSession(props.api, currentScope, sessionID)
@@ -705,6 +747,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       layout: controls.layout,
       analyze: controls.analyze,
       analyzeAll: controls.analyzeAll,
+      commitMessage: controls.commitMessage,
       stop: controls.stop,
       back: controls.back,
       close: controls.close,
@@ -840,6 +883,10 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       if (inspect()) return
       const token = analysisToken
       deferAnalysis(() => void analyzeAll(token))
+    },
+    commitMessage() {
+      const token = analysisToken
+      deferAnalysis(() => void generateCommitMessage(token))
     },
     stop() {
       void stopAnalysis()

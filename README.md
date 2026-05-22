@@ -24,6 +24,8 @@ To run Ledger analysis with a specific model, pass a `model` option:
 
 Restart OpenCode after changing config. Open Ledger from the command palette or with `/ledger`.
 
+Press `m` in Ledger to generate and copy a one-line commit message from the current diff plus any fresh Ledger analysis.
+
 Ledger analysis sessions are temporary and are deleted after analysis finishes or is stopped. Set `LEDGER_DEBUG=1` to keep analysis request and response payloads under `.opencode/ledger/debug`.
 
 ## Development
