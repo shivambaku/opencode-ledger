@@ -3,7 +3,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import type { BoxRenderable, KeyEvent, TextareaOptions, TextareaRenderable } from "@opentui/core"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { abortSession, requestAnalysis } from "../analysis"
+import { abortSession, deleteSession, requestAnalysis } from "../analysis"
 import { blockContainsFileLine, blockForFileLine, blockHunkStart, buildDisplayRows, diffLineForFileLine } from "../display"
 import { blockApproved, blockComment, blockLabel, blockReviewed, blockStale, codeFiletype, fileApproved, fileImpact, fileNeedsAnalysis, fileNeedsApproval, fileRow, fileStatusMark, lineRangeText, unresolvedCommentCount } from "../domain"
 import { openEditor } from "../editor"
@@ -127,7 +127,7 @@ const helpRows: HelpRow[] = [
   { section: "General", keys: "q", desc: "Close ledger" },
 ]
 
-export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string, unknown>; registerControls(controls?: LedgerControls): void; reconcileWorkspace(directory: string | undefined): Promise<void> }) {
+export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string, unknown>; analysisModel?: unknown; registerControls(controls?: LedgerControls): void; reconcileWorkspace(directory: string | undefined): Promise<void> }) {
   let root: BoxRenderable | undefined
   const dim = useTerminalDimensions()
   const route = parseRouteParams(props.params)
@@ -544,7 +544,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     setAnalyzing(fileID, true)
     let sessionID: string | undefined
     try {
-      const result = await requestAnalysis(props.api, fileScope, file, () => token === analysisToken, (id) => {
+      const result = await requestAnalysis(props.api, fileScope, file, () => token === analysisToken, props.analysisModel, (id) => {
         sessionID = id
         activeAnalysisSessions.add(id)
       })
@@ -556,7 +556,10 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     } catch (error) {
       if (token === analysisToken) showLedgerNotice(errorMessage(error), "#f6b26b")
     } finally {
-      if (sessionID) activeAnalysisSessions.delete(sessionID)
+      if (sessionID) {
+        activeAnalysisSessions.delete(sessionID)
+        await deleteSession(props.api, fileScope, sessionID)
+      }
       setAnalyzing(fileID, false)
     }
   }
@@ -593,7 +596,10 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const sessions = [...activeAnalysisSessions]
     activeAnalysisSessions.clear()
     setAnalyzingIDs(new Set<string>())
-    await Promise.all(sessions.map((sessionID) => abortSession(props.api, currentScope, sessionID)))
+    await Promise.all(sessions.map(async (sessionID) => {
+      await abortSession(props.api, currentScope, sessionID)
+      await deleteSession(props.api, currentScope, sessionID)
+    }))
     showLedgerNotice("Analysis stopped.")
   }
 

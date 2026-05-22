@@ -9,7 +9,7 @@ import type { LedgerControls } from "./types"
 import { errorMessage } from "./utils"
 import { LedgerScreen } from "./ui/LedgerScreen"
 
-const tui: TuiPlugin = async (api) => {
+const tui: TuiPlugin = async (api, options) => {
   let controls: LedgerControls | undefined
   const reconcileTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const registerControls = (next?: LedgerControls) => {
@@ -43,7 +43,7 @@ const tui: TuiPlugin = async (api) => {
   api.route.register([
     {
       name: ROUTE,
-      render: ({ params }) => <LedgerScreen api={api} params={params} registerControls={registerControls} reconcileWorkspace={reconcile} />,
+      render: ({ params }) => <LedgerScreen api={api} params={params} analysisModel={options?.model} registerControls={registerControls} reconcileWorkspace={reconcile} />,
     },
   ])
 

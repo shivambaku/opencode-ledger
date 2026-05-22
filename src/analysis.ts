@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { MAX_EXPLANATIONS_PER_HUNK, REVIEW_SCHEMA } from "./constants"
 import { buildReviewPrompt, type ReviewPrompt } from "./reviewPrompt"
-import type { BlockExplanation, BlockReview, FileAnalysis, LedgerBlock, LedgerFile, LedgerScope } from "./types"
+import type { AnalysisModel, BlockExplanation, BlockReview, FileAnalysis, LedgerBlock, LedgerFile, LedgerScope } from "./types"
 import { clip, isImpact, isRecord, textFromParts } from "./utils"
 
 function debugEnabled() {
@@ -14,7 +14,7 @@ function debugFileName(path: string) {
   return path.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "file"
 }
 
-function writeAnalysisDebug(scope: LedgerScope, file: LedgerFile, analysisSessionID: string, request: ReviewPrompt, response: { structured?: unknown; rawText?: string } | undefined, error: unknown) {
+function writeAnalysisDebug(scope: LedgerScope, file: LedgerFile, analysisSessionID: string, request: ReviewPrompt, response: { structured?: unknown; rawText?: string } | undefined, error: unknown, model: AnalysisModel | undefined) {
   if (!debugEnabled()) return
   try {
     const dir = join(scope.directory, ".opencode/ledger/debug")
@@ -32,6 +32,7 @@ function writeAnalysisDebug(scope: LedgerScope, file: LedgerFile, analysisSessio
       fileHash: file.hash,
       analysisSessionID,
       agent: "plan",
+      model: model ? `${model.providerID}/${model.modelID}` : undefined,
       context: request.context,
       hunks: request.hunks,
       prompt: request.prompt,
@@ -45,6 +46,17 @@ function writeAnalysisDebug(scope: LedgerScope, file: LedgerFile, analysisSessio
   } catch {
     // Debug logging should never make review analysis fail.
   }
+}
+
+function parseAnalysisModel(value: unknown): AnalysisModel | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "string") throw new Error("Invalid Ledger model option. Expected provider/model-id.")
+
+  const model = value.trim()
+  const slash = model.indexOf("/")
+  if (slash <= 0 || slash === model.length - 1) throw new Error("Invalid Ledger model option. Expected provider/model-id.")
+
+  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
 }
 
 function parseJsonObject(text: string) {
@@ -123,23 +135,34 @@ export async function abortSession(api: TuiPluginApi, scope: LedgerScope, sessio
   }
 }
 
-async function createAnalysisSession(api: TuiPluginApi, scope: LedgerScope, shouldContinue: () => boolean) {
+export async function deleteSession(api: TuiPluginApi, scope: LedgerScope, sessionID: string) {
+  try {
+    await api.client.session.delete({ sessionID, directory: scope.directory })
+  } catch {
+    // Analysis sessions are temporary; cleanup is best effort.
+  }
+}
+
+async function createAnalysisSession(api: TuiPluginApi, scope: LedgerScope, shouldContinue: () => boolean, model: AnalysisModel | undefined) {
   if (!shouldContinue()) throw new Error("Analysis stopped.")
   const result = await api.client.session.create({
     directory: scope.directory,
     title: "Ledger analysis",
     agent: "plan",
+    model: model ? { providerID: model.providerID, id: model.modelID } : undefined,
   })
   if (result.error || !result.data) throw new Error("Failed to create Ledger analysis session.")
   if (!shouldContinue()) {
     await abortSession(api, scope, result.data.id)
+    await deleteSession(api, scope, result.data.id)
     throw new Error("Analysis stopped.")
   }
   return result.data.id
 }
 
-export async function requestAnalysis(api: TuiPluginApi, scope: LedgerScope, file: LedgerFile, shouldContinue: () => boolean, onSession?: (sessionID: string) => void) {
-  const sessionID = await createAnalysisSession(api, scope, shouldContinue)
+export async function requestAnalysis(api: TuiPluginApi, scope: LedgerScope, file: LedgerFile, shouldContinue: () => boolean, modelOption?: unknown, onSession?: (sessionID: string) => void) {
+  const model = parseAnalysisModel(modelOption)
+  const sessionID = await createAnalysisSession(api, scope, shouldContinue, model)
   onSession?.(sessionID)
   if (!shouldContinue()) throw new Error("Analysis stopped.")
   const request = await buildReviewPrompt(scope, file)
@@ -149,6 +172,7 @@ export async function requestAnalysis(api: TuiPluginApi, scope: LedgerScope, fil
       sessionID,
       directory: scope.directory,
       agent: "plan",
+      model: model ? { providerID: model.providerID, modelID: model.modelID } : undefined,
       format: { type: "json_schema", schema: REVIEW_SCHEMA },
       parts: [{ type: "text", text: request.prompt }],
     })
@@ -158,10 +182,10 @@ export async function requestAnalysis(api: TuiPluginApi, scope: LedgerScope, fil
     }
     response = { structured: result.data.info.structured, rawText: textFromParts(result.data.parts) }
     const parsed = result.data.info.structured !== undefined ? parseAnalysisValue(result.data.info.structured, file) : parseAnalysisValue(response.rawText ?? "", file)
-    writeAnalysisDebug(scope, file, sessionID, request, response, undefined)
+    writeAnalysisDebug(scope, file, sessionID, request, response, undefined, model)
     return parsed
   } catch (error) {
-    writeAnalysisDebug(scope, file, sessionID, request, response, error)
+    writeAnalysisDebug(scope, file, sessionID, request, response, error, model)
     throw error
   }
 }

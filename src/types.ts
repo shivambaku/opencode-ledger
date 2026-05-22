@@ -1,5 +1,10 @@
 export type Impact = "high" | "medium" | "low"
 
+export type AnalysisModel = {
+  providerID: string
+  modelID: string
+}
+
 export type BlockExplanation = {
   diffStartLine: number
   diffEndLine: number
