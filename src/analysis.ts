@@ -1,9 +1,10 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { COMMIT_MESSAGE_SCHEMA, MAX_EXPLANATIONS_PER_HUNK, REVIEW_SCHEMA } from "./constants"
 import { buildCommitMessagePrompt } from "./commitPrompt"
 import { buildReviewPrompt, type ReviewPrompt } from "./reviewPrompt"
+import { ensureLedgerIgnored } from "./storage"
 import type { AnalysisModel, BlockExplanation, BlockReview, CommitMessageResult, FileAnalysis, LedgerBlock, LedgerFile, LedgerScope } from "./types"
 import { clip, isImpact, isRecord, textFromParts } from "./utils"
 
@@ -20,8 +21,7 @@ function writeAnalysisDebug(scope: LedgerScope, file: LedgerFile, analysisSessio
   try {
     const dir = join(scope.directory, ".opencode/ledger/debug")
     mkdirSync(dir, { recursive: true })
-    const ignore = join(scope.directory, ".opencode/ledger/.gitignore")
-    if (!existsSync(ignore)) writeFileSync(ignore, "*\n!.gitignore\n")
+    ensureLedgerIgnored(scope)
 
     const createdAt = Date.now()
     const payload = {

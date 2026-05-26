@@ -9,7 +9,8 @@ import { hashString, isImpact, isRecord, normalizePath } from "./utils"
 type LedgerState = { scopes: Record<string, LedgerFile[]> }
 
 const STATE_FILE = ".opencode/ledger/state.json"
-const IGNORE_FILE = ".opencode/ledger/.gitignore"
+const OPENCODE_IGNORE_FILE = ".opencode/.gitignore"
+const LEDGER_IGNORE_ENTRY = "/ledger/"
 
 function ledgerScopeIDForDirectory(directory: string | undefined) {
   return hashString(normalizePath(directory || "unknown"))
@@ -28,8 +29,33 @@ function statePath(scope: LedgerScope) {
   return join(scope.directory, STATE_FILE)
 }
 
-function ignorePath(scope: LedgerScope) {
-  return join(scope.directory, IGNORE_FILE)
+function opencodeIgnorePath(scope: LedgerScope) {
+  return join(scope.directory, OPENCODE_IGNORE_FILE)
+}
+
+function hasLedgerIgnoreEntry(content: string) {
+  return content.split(/\r?\n/).some((line) => {
+    const entry = line.trim()
+    if (!entry || entry.startsWith("#") || entry.startsWith("!")) return false
+    const normalized = entry.replace(/\/+$/, "")
+    return normalized === "ledger" || normalized === "/ledger"
+  })
+}
+
+export function ensureLedgerIgnored(scope: LedgerScope) {
+  const path = opencodeIgnorePath(scope)
+  mkdirSync(dirname(path), { recursive: true })
+
+  if (!existsSync(path)) {
+    writeFileSync(path, `${LEDGER_IGNORE_ENTRY}\n`)
+    return
+  }
+
+  const content = readFileSync(path, "utf8")
+  if (hasLedgerIgnoreEntry(content)) return
+
+  const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : ""
+  writeFileSync(path, `${content}${separator}${LEDGER_IGNORE_ENTRY}\n`)
 }
 
 function isLedgerState(value: unknown): value is LedgerState {
@@ -48,8 +74,7 @@ function readState(scope: LedgerScope): LedgerState {
 function writeState(scope: LedgerScope, state: LedgerState) {
   const path = statePath(scope)
   mkdirSync(dirname(path), { recursive: true })
-  const ignore = ignorePath(scope)
-  if (!existsSync(ignore)) writeFileSync(ignore, "*\n!.gitignore\n")
+  ensureLedgerIgnored(scope)
 
   const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`
   try {
