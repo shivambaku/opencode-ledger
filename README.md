@@ -4,25 +4,26 @@ TUI review ledger plugin for OpenCode.
 
 ## Install
 
-Add the Git package to your OpenCode TUI config:
+Clone Ledger somewhere stable and install dependencies:
+
+```bash
+git clone https://github.com/shivambaku/opencode-ledger.git /absolute/path/to/opencode-ledger
+cd /absolute/path/to/opencode-ledger
+npm install
+```
+
+Add Ledger to your OpenCode TUI config:
 
 ```json
 {
   "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["github:shivambaku/opencode-ledger"]
+  "plugin": ["file:///absolute/path/to/opencode-ledger/src/tui.tsx"]
 }
 ```
 
-To run Ledger analysis with a specific model, pass a `model` option:
+Use the same absolute path where you cloned the repo. Restart OpenCode after changing config.
 
-```json
-{
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [["github:shivambaku/opencode-ledger", { "model": "provider/model-id" }]]
-}
-```
-
-Restart OpenCode after changing config. Open Ledger from the command palette or with `/ledger`.
+Open Ledger from the command palette or with `/ledger`.
 
 Press `m` in Ledger to generate and copy a one-line commit message from the current diff plus any fresh Ledger analysis.
 
