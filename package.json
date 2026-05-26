@@ -4,18 +4,21 @@
   "description": "TUI review ledger plugin for OpenCode.",
   "license": "MIT",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/tui.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./tui": "./src/index.ts"
+    ".": "./dist/tui.js",
+    "./tui": "./dist/tui.js"
   },
   "files": [
+    "dist",
     "src",
+    "scripts",
     "README.md",
     "LICENSE",
     "tsconfig.json"
   ],
   "scripts": {
+    "build": "bun run scripts/build.ts",
     "check": "tsc --noEmit"
   },
   "dependencies": {
