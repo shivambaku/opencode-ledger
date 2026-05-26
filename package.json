@@ -1,13 +1,13 @@
 {
   "name": "opencode-ledger",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TUI review ledger plugin for OpenCode.",
   "license": "MIT",
   "type": "module",
-  "main": "./src/index.tsx",
+  "main": "./src/index.ts",
   "exports": {
-    ".": "./src/index.tsx",
-    "./tui": "./src/tui.tsx"
+    ".": "./src/index.ts",
+    "./tui": "./src/index.ts"
   },
   "files": [
     "src",
