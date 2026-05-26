@@ -1,6 +1,6 @@
 {
   "name": "opencode-ledger",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "TUI review ledger plugin for OpenCode.",
   "license": "MIT",
   "type": "module",
@@ -11,15 +11,13 @@
   },
   "files": [
     "dist",
-    "src",
-    "scripts",
     "README.md",
-    "LICENSE",
-    "tsconfig.json"
+    "LICENSE"
   ],
   "scripts": {
     "build": "bun run scripts/build.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "prepare": "bun run build"
   },
   "dependencies": {
     "@opentui/core": "0.2.10",
