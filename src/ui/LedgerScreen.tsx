@@ -183,37 +183,24 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   const diffScrollStart = () => clip(diffScroll(), 0, diffMaxScroll())
   const activeDisplayIndex = () => clip(diffCursor(), 0, Math.max(0, displayDiffRows().length - 1))
   const activeDisplayRow = () => displayDiffRows()[activeDisplayIndex()]
-  const activeBlock = () => {
+  const activeBlock = createMemo(() => {
     const file = selected()
     const row = activeDisplayRow()
     if (!file || !row) return undefined
     if (row.blockID) return file.blocks.find((block) => block.id === row.blockID)
     return blockForFileLine(file, row.fileLine)
-  }
-  const activeDiffLine = () => {
+  })
+  const activeDiffLine = createMemo(() => {
     const row = activeDisplayRow()
     const block = activeBlock()
     return row?.diffLineIndex ?? (block ? diffLineForFileLine(block, row?.fileLine) : 0)
-  }
+  })
   const visibleDiffLines = () => displayDiffRows().slice(diffScrollStart(), diffScrollStart() + diffVisibleRows())
   const activeExplanation = createMemo(() => {
     const block = activeBlock()
     if (!explanationVisible()) return undefined
     if (!block?.review?.explanations.length) return undefined
     return explanationForLine(block, activeDiffLine())?.explanation
-  })
-  const activeExplanationGutterRows = createMemo(() => {
-    const block = activeBlock()
-    const explanation = activeExplanation()
-    const result = new Set<number>()
-    if (!block || !explanation) return result
-
-    for (const row of displayDiffRows()) {
-      if (!displayRowBelongsToBlock(row, block)) continue
-      if (explanationForLine(block, diffLineForRow(block, row))?.explanation === explanation) result.add(row.rowIndex)
-    }
-
-    return result
   })
   const diffPosition = () => {
     const total = displayDiffRows().length
@@ -406,8 +393,14 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   function targetBlockForJump(file: LedgerFile, delta: number) {
     const currentRow = activeDisplayIndex()
     const currentBlock = activeBlock()
+    const rows = displayDiffRows()
+    const rowByBlockID = new Map<string, number>()
+    for (const row of rows) {
+      if (row.blockID && !rowByBlockID.has(row.blockID)) rowByBlockID.set(row.blockID, row.rowIndex)
+    }
+
     const targets = file.blocks
-      .map((block) => ({ block, rowIndex: displayIndexForBlock(block) }))
+      .map((block) => ({ block, rowIndex: rowByBlockID.get(block.id) ?? clip(blockHunkStart(block) - 1, 0, Math.max(0, rows.length - 1)) }))
       .sort((a, b) => a.rowIndex - b.rowIndex || a.block.diffStartLine - b.block.diffStartLine)
 
     if (!targets.length) return undefined
@@ -464,9 +457,16 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
 
   function explanationForLine(block: LedgerBlock, line: number) {
     const explanations = block.review?.explanations ?? []
-    const containing = explanations.find((item) => line >= item.diffStartLine && line <= item.diffEndLine)
-    if (containing) return { explanation: containing, exact: true }
-    const nearest = [...explanations].sort((a, b) => Math.min(Math.abs(a.diffStartLine - line), Math.abs(a.diffEndLine - line)) - Math.min(Math.abs(b.diffStartLine - line), Math.abs(b.diffEndLine - line)))[0]
+    let nearest: LedgerExplanation | undefined
+    let nearestDistance = Infinity
+    for (const item of explanations) {
+      if (line >= item.diffStartLine && line <= item.diffEndLine) return { explanation: item, exact: true }
+      const distance = Math.min(Math.abs(item.diffStartLine - line), Math.abs(item.diffEndLine - line))
+      if (distance < nearestDistance) {
+        nearest = item
+        nearestDistance = distance
+      }
+    }
     return nearest ? { explanation: nearest, exact: false } : undefined
   }
 
@@ -481,7 +481,11 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
 
   function rowInReviewedExplanationRegion(row: VisibleDiffLine) {
-    return activeExplanationGutterRows().has(row.rowIndex)
+    const block = activeBlock()
+    const explanation = activeExplanation()
+    if (!block || !explanation) return false
+    if (!displayRowBelongsToBlock(row, block)) return false
+    return explanationForLine(block, diffLineForRow(block, row))?.explanation === explanation
   }
 
   function rowHasActiveGutter(row: VisibleDiffLine) {
