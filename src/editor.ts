@@ -15,6 +15,10 @@ function editorCommand(editor: string, file: string, line: number) {
 }
 
 export async function openEditor(api: TuiPluginApi, scope: LedgerScope, file: LedgerFile, block: LedgerBlock): Promise<EditorResult> {
+  if (file.status === "deleted") {
+    return { text: "Deleted files cannot be opened from Ledger.", fg: "#f6b26b" }
+  }
+
   const editor = process.env.VISUAL || process.env.EDITOR
   if (!editor) {
     return { text: "Set VISUAL or EDITOR to open files from Ledger.", fg: "#f6b26b" }

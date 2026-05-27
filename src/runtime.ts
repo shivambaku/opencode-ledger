@@ -6,6 +6,8 @@ import { parseHunk } from "./git"
 import type { LedgerBlock, LedgerFile } from "./types"
 import { parseRouteParams } from "./utils"
 
+const CLIPBOARD_WRITE_TIMEOUT = 1500
+
 function writeOsc52(text: string) {
   if (!process.stdout.isTTY) return false
   const sequence = `\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`
@@ -17,9 +19,14 @@ function writeWithStdin(command: string, args: string[], text: string) {
   return new Promise<boolean>((resolve) => {
     const child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] })
     let settled = false
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(false)
+    }, CLIPBOARD_WRITE_TIMEOUT)
     const finish = (ok: boolean) => {
       if (settled) return
       settled = true
+      clearTimeout(timer)
       resolve(ok)
     }
 

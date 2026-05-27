@@ -2,6 +2,9 @@ import { blockComment, blockReviewed, fileNeedsAnalysis, lineRangeText } from ".
 import type { CommitMessageQuality, LedgerFile } from "./types"
 import { limitText } from "./utils"
 
+const MAX_COMMIT_DIFF_CHARS = 18000
+const MAX_FILE_DIFF_CHARS = 3500
+
 export type CommitMessagePrompt = {
   prompt: string
   quality: CommitMessageQuality
@@ -21,6 +24,12 @@ function commitQuality(files: LedgerFile[]): Pick<CommitMessagePrompt, "quality"
 function fileSummary(file: LedgerFile) {
   const status = file.status ?? "modified"
   return `${status} ${file.path} (+${file.additions}/-${file.deletions})`
+}
+
+function changesetSummary(files: LedgerFile[]) {
+  const additions = files.reduce((sum, file) => sum + file.additions, 0)
+  const deletions = files.reduce((sum, file) => sum + file.deletions, 0)
+  return `${files.length} ${files.length === 1 ? "file" : "files"} changed (+${additions}/-${deletions})`
 }
 
 function analysisSummary(file: LedgerFile) {
@@ -45,29 +54,37 @@ export function buildCommitMessagePrompt(files: LedgerFile[]): CommitMessageProm
   const quality = commitQuality(files)
   const summaries = files.map(fileSummary).join("\n")
   const analysis = limitText(files.map(analysisSummary).filter(Boolean).join("\n\n"), 8000) || "(none available)"
-  const diff = limitText(files.map((file) => `File: ${file.path}\n\`\`\`diff\n${file.patch}\n\`\`\``).join("\n\n"), 18000)
+  const maxFileDiff = Math.max(1200, Math.min(MAX_FILE_DIFF_CHARS, Math.floor(MAX_COMMIT_DIFF_CHARS / Math.max(1, files.length))))
+  const diff = limitText(files.map((file) => `File: ${file.path}\n\`\`\`diff\n${limitText(file.patch, maxFileDiff)}\n\`\`\``).join("\n\n"), MAX_COMMIT_DIFF_CHARS)
   const prompt = `You are generating a Git commit message for the current Ledger changeset.
 
-Use the current diff as the source of truth. Existing Ledger analysis and reviewer comments may explain intent, but may be partial or stale. Do not mention Ledger, analysis coverage, hunks, JSON, or internal IDs in the commit message.
+Generate the message for the entire changeset, not for one interesting file, helper, bug fix, or analysis note. First infer the dominant purpose that best explains the changed files together. Prefer a broad, accurate summary over a narrow implementation detail.
+
+Use the current diff as the source of truth. Existing Ledger analysis and reviewer comments are secondary context: they may explain intent, but may be partial, stale, or focused on only one file. Do not mention Ledger, analysis coverage, hunks, JSON, or internal IDs in the commit message.
 
 Return only JSON matching the requested schema.
 
-Files:
+Changeset summary:
+${changesetSummary(files)}
+
+Changed files:
 ${summaries}
 
-Available Ledger context:
-${analysis}
-
-Current Git diff:
+Current Git diff excerpts by file:
 ${diff}
 
+Available Ledger context, if useful:
+${analysis}
+
 Fields:
-- title: one short Conventional Commit subject using type(scope): description. Scope is optional. Keep it under 72 characters and do not end with punctuation.
+- title: one short Conventional Commit subject using type(scope): description. Scope is optional. Keep it under 72 characters and do not end with punctuation. It must summarize the dominant changeset purpose, not just one internal cleanup.
 - body: always an empty string.
 
 Style:
 - Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore.
 - Describe the user-visible or developer-facing change, not the mechanics of editing files.
+- If the changes are mixed release/setup/docs/code hardening work, choose a broad title that covers the release or maintenance intent.
+- Only use fix when the dominant change is a user-facing bug fix. Use chore or build for package metadata, publish setup, and release preparation.
 - Use imperative mood after the colon.
 - Do not invent motivation that is not supported by the diff or available context.
 - Do not include markdown fences, bullets unless genuinely helpful, or a trailing period in the title.

@@ -67,8 +67,12 @@ function readState(scope: LedgerScope): LedgerState {
   const path = statePath(scope)
   if (!existsSync(path)) return { scopes: {} }
 
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown
-  return isLedgerState(parsed) ? parsed : { scopes: {} }
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown
+    return isLedgerState(parsed) ? parsed : { scopes: {} }
+  } catch {
+    return { scopes: {} }
+  }
 }
 
 function writeState(scope: LedgerScope, state: LedgerState) {

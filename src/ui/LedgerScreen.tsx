@@ -10,7 +10,7 @@ import { openEditor } from "../editor"
 import { ledgerAction } from "../keys"
 import { closeLedger, writeClipboard, yankBlockToClipboard, yankUnresolvedCommentsToClipboard } from "../runtime"
 import { currentFile, ledgerFiles, ledgerStateVersion, routeScope, setBlockComment, setBlockResolved, setFileAnalysisResult, setFileResolved } from "../storage"
-import type { InspectFocus, InspectLayout, LedgerAction, LedgerBlock, LedgerControls, LedgerFile, LedgerNotice, VisibleDiffLine } from "../types"
+import type { InspectFocus, InspectLayout, LedgerAction, LedgerBlock, LedgerControls, LedgerFile, LedgerNotice, LedgerScope, VisibleDiffLine } from "../types"
 import { clip, errorMessage, fileLines, filename, parseRouteParams, splitWidths, wrapText } from "../utils"
 import { DiffLine } from "./DiffLine"
 import { codeSyntax } from "./styles"
@@ -231,11 +231,17 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   const helpTop = () => Math.max(1, Math.floor((dim().height - helpHeight()) / 2))
 
   let analysisToken = 0
+  let disposed = false
   let statePollTimer: ReturnType<typeof setInterval> | undefined
   let analyzingFrameTimer: ReturnType<typeof setInterval> | undefined
   let lastStateVersion = 0
-  const activeAnalysisSessions = new Set<string>()
+  const activeAnalysisSessions = new Map<string, LedgerScope>()
+  const deferredTimers = new Set<ReturnType<typeof setTimeout>>()
   const ANALYSIS_CONCURRENCY = 2
+
+  function analysisActive(token: number) {
+    return !disposed && token === analysisToken
+  }
 
   function isAnalyzingFile(file: LedgerFile) {
     return analyzingIDs().has(file.id)
@@ -266,6 +272,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
 
   function setAnalyzing(id: string, analyzing: boolean) {
+    if (disposed) return
     setAnalyzingIDs((current) => {
       const next = new Set(current)
       if (analyzing) next.add(id)
@@ -286,9 +293,26 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   })
 
   function showLedgerNotice(text: string, fg = "#8b96b8") {
+    if (disposed) return
     if (noticeTimer) clearTimeout(noticeTimer)
     setNotice({ text, fg })
-    noticeTimer = setTimeout(() => setNotice(undefined), 2200)
+    noticeTimer = setTimeout(() => {
+      if (!disposed) setNotice(undefined)
+    }, 2200)
+  }
+
+  async function deleteAnalysisSession(sessionID: string, sessionScope: LedgerScope) {
+    activeAnalysisSessions.delete(sessionID)
+    await deleteSession(props.api, sessionScope, sessionID)
+  }
+
+  async function abortActiveAnalysisSessions() {
+    const sessions = [...activeAnalysisSessions.entries()]
+    activeAnalysisSessions.clear()
+    await Promise.all(sessions.map(async ([sessionID, sessionScope]) => {
+      await abortSession(props.api, sessionScope, sessionID)
+      await deleteSession(props.api, sessionScope, sessionID)
+    }))
   }
 
   function helpText() {
@@ -545,28 +569,25 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   async function analyzeFile(fileID: string, token: number) {
     const fileScope = scope()
     const file = currentFile(fileScope, fileID)
-    if (!file || isAnalyzing(fileID)) return
+    if (!file || isAnalyzing(fileID) || !analysisActive(token)) return
 
     setAnalyzing(fileID, true)
     let sessionID: string | undefined
     try {
       const result = await requestAnalysis(props.api, fileScope, file, () => token === analysisToken, props.analysisModel, (id) => {
         sessionID = id
-        activeAnalysisSessions.add(id)
+        activeAnalysisSessions.set(id, fileScope)
       })
-      if (token !== analysisToken) return
+      if (!analysisActive(token)) return
       const preserveID = selected()?.id
       setFileAnalysisResult(fileScope, fileID, file.hash, result.analysis, result.reviews)
       refresh(preserveID)
       showLedgerNotice(`Analyzed ${file.path}.`, "#3ee06f")
     } catch (error) {
-      if (token === analysisToken) showLedgerNotice(errorMessage(error), "#f6b26b")
+      if (analysisActive(token)) showLedgerNotice(errorMessage(error), "#f6b26b")
     } finally {
-      if (sessionID) {
-        activeAnalysisSessions.delete(sessionID)
-        await deleteSession(props.api, fileScope, sessionID)
-      }
-      setAnalyzing(fileID, false)
+      if (sessionID) await deleteAnalysisSession(sessionID, fileScope)
+      if (analysisActive(token)) setAnalyzing(fileID, false)
     }
   }
 
@@ -582,13 +603,14 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
 
   async function analyzeAll(token: number) {
+    if (!analysisActive(token)) return
     const targets = ledgerFiles(scope()).filter((file) => fileNeedsApproval(file) && fileNeedsAnalysis(file) && !isAnalyzing(file.id)).map((file) => file.id)
     if (!targets.length) {
       showLedgerNotice("Everything needing approval is analyzed.")
       return
     }
     await runWithConcurrency(targets, ANALYSIS_CONCURRENCY, async (fileID) => {
-      if (token === analysisToken) await analyzeFile(fileID, token)
+      if (analysisActive(token)) await analyzeFile(fileID, token)
     })
   }
 
@@ -599,6 +621,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
 
   async function generateCommitMessage(token: number) {
+    if (!analysisActive(token)) return
     if (generatingCommitMessage()) {
       showLedgerNotice("Commit message is already generating. Press x to stop it.")
       return
@@ -610,42 +633,37 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     let sessionID: string | undefined
     try {
       await props.reconcileWorkspace(route.directory)
-      if (token !== analysisToken) return
+      if (!analysisActive(token)) return
       refresh()
       const result = await requestCommitMessage(props.api, fileScope, ledgerFiles(fileScope), () => token === analysisToken, props.analysisModel, (id) => {
         sessionID = id
-        activeAnalysisSessions.add(id)
+        activeAnalysisSessions.set(id, fileScope)
       })
-      if (token !== analysisToken) return
+      if (!analysisActive(token)) return
       const ok = await writeClipboard(props.api, result.text)
       const context = commitMessageContextText(result)
       showLedgerNotice(ok ? `Yanked commit message (${context}).` : `Generated commit message (${context}), but clipboard unavailable.`, ok ? "#3ee06f" : "#f6b26b")
     } catch (error) {
-      if (token === analysisToken) showLedgerNotice(errorMessage(error), "#f6b26b")
+      if (analysisActive(token)) showLedgerNotice(errorMessage(error), "#f6b26b")
     } finally {
-      if (sessionID) {
-        activeAnalysisSessions.delete(sessionID)
-        await deleteSession(props.api, fileScope, sessionID)
-      }
-      setGeneratingCommitMessage(false)
+      if (sessionID) await deleteAnalysisSession(sessionID, fileScope)
+      if (analysisActive(token)) setGeneratingCommitMessage(false)
     }
   }
 
   function deferAnalysis(work: () => void) {
-    setTimeout(work, 25)
+    const timer = setTimeout(() => {
+      deferredTimers.delete(timer)
+      if (!disposed) work()
+    }, 25)
+    deferredTimers.add(timer)
   }
 
   async function stopAnalysis() {
     analysisToken++
-    const currentScope = scope()
-    const sessions = [...activeAnalysisSessions]
-    activeAnalysisSessions.clear()
     setAnalyzingIDs(new Set<string>())
     setGeneratingCommitMessage(false)
-    await Promise.all(sessions.map(async (sessionID) => {
-      await abortSession(props.api, currentScope, sessionID)
-      await deleteSession(props.api, currentScope, sessionID)
-    }))
+    await abortActiveAnalysisSessions()
     showLedgerNotice("Analysis stopped.")
   }
 
@@ -963,9 +981,14 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   })
 
   onCleanup(() => {
+    disposed = true
+    analysisToken++
+    for (const timer of deferredTimers) clearTimeout(timer)
+    deferredTimers.clear()
     if (statePollTimer) clearInterval(statePollTimer)
     if (analyzingFrameTimer) clearInterval(analyzingFrameTimer)
     if (noticeTimer) clearTimeout(noticeTimer)
+    void abortActiveAnalysisSessions()
     props.registerControls(undefined)
   })
 

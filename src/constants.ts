@@ -71,7 +71,7 @@ export const ledgerActionConfigs = [
   { action: "editor", command: "ledger.editor", commandKey: "e", desc: "Open editor", keys: ["e"] },
   { action: "inspect", command: "ledger.inspect", commandKey: "enter", desc: "Toggle inspect/focus", keys: ["enter"], aliases: ["return"] },
   { action: "explanation", command: "ledger.explanation", commandKey: "tab", desc: "Toggle explanation", keys: ["tab"], aliases: ["\t"] },
-  { action: "layout", command: "ledger.layout", commandKey: "|", desc: "Toggle layout", keys: ["|"] },
+  { action: "layout", command: "ledger.layout", commandKey: "|", desc: "Toggle layout", keys: ["|"], aliases: ["shift+\\"] },
   { action: "analyze", command: "ledger.analyze", commandKey: "a", desc: "Analyze file", keys: ["a"] },
   { action: "analyzeAll", command: "ledger.analyzeAll", commandKey: "shift+a", desc: "Analyze pending files", keys: ["shift+a"], aliases: ["A"] },
   { action: "commitMessage", command: "ledger.commitMessage", commandKey: "m", desc: "Generate commit message", keys: ["m"] },

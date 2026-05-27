@@ -90,6 +90,14 @@ function gitPatchPath(value: string) {
   return normalizePath(path.replace(/^[ab]\//, ""))
 }
 
+function gitDiffPaths(line: string) {
+  const parts = line.slice("diff --git ".length).match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []
+  return {
+    oldPath: parts[0] ? gitPatchPath(parts[0]) : "",
+    newPath: parts[1] ? gitPatchPath(parts[1]) : "",
+  }
+}
+
 function fileDiffsFromRawPatch(raw: string): FileDiff[] {
   const sections: string[][] = []
   let current: string[] | undefined
@@ -108,13 +116,19 @@ function fileDiffsFromRawPatch(raw: string): FileDiff[] {
     let newPath = ""
     let status: string | undefined
     for (const line of lines) {
-      if (line.startsWith("--- ")) oldPath = gitPatchPath(line.slice(4))
+      if (line.startsWith("diff --git ")) {
+        const paths = gitDiffPaths(line)
+        oldPath ||= paths.oldPath
+        newPath ||= paths.newPath
+      } else if (line.startsWith("--- ")) oldPath = gitPatchPath(line.slice(4))
       else if (line.startsWith("+++ ")) newPath = gitPatchPath(line.slice(4))
       else if (line.startsWith("new file mode")) status = "added"
       else if (line.startsWith("deleted file mode")) status = "deleted"
+      else if (line.startsWith("rename from ")) oldPath = gitPatchPath(line.slice("rename from ".length))
+      else if (line.startsWith("rename to ")) newPath = gitPatchPath(line.slice("rename to ".length))
     }
 
-    const path = newPath || oldPath
+    const path = status === "deleted" ? oldPath || newPath : newPath || oldPath
     if (!path) continue
     diffs.push({
       file: path,
@@ -227,11 +241,15 @@ async function replaceWorkspaceDiffs(scope: LedgerScope, diffs: unknown[]) {
 
 export async function reconcileWorkspaceDiff(api: TuiPluginApi, scope: LedgerScope, shouldApply?: () => boolean) {
   const raw = await api.client.vcs.diff2.raw({ directory: scope.directory })
-  if (shouldApply && !shouldApply()) return false
   if (!raw.error && typeof raw.data === "string") {
-    await replaceWorkspaceDiffs(scope, fileDiffsFromRawPatch(raw.data))
-    return true
+    if (shouldApply && !shouldApply()) return false
+    const diffs = fileDiffsFromRawPatch(raw.data)
+    if (diffs.length) {
+      await replaceWorkspaceDiffs(scope, diffs)
+      return true
+    }
   }
+  if (shouldApply && !shouldApply()) return false
 
   const result = await api.client.vcs.diff({ directory: scope.directory, mode: "git" })
   if (result.error || !result.data) throw new Error("Failed to refresh Git diff for Ledger.")

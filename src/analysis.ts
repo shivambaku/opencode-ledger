@@ -69,7 +69,7 @@ function parseCommitMessageValue(value: unknown, meta: Pick<CommitMessageResult,
   const title = parsed.title.split(/\r?\n/)[0]?.replace(/\s+/g, " ").trim() ?? ""
   if (!title) throw new Error("Commit message response did not include a title.")
   const body = parsed.body.trim()
-  return { ...meta, title, body, text: title }
+  return { ...meta, title, body, text: body ? `${title}\n\n${body}` : title }
 }
 
 function parseJsonObject(text: string) {

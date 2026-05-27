@@ -12,12 +12,17 @@ import { LedgerScreen } from "./ui/LedgerScreen"
 const tui: TuiPlugin = async (api, options) => {
   let controls: LedgerControls | undefined
   const reconcileTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const reconcileTokens = new Map<string, number>()
+  let disposed = false
   const registerControls = (next?: LedgerControls) => {
     controls = next
   }
   const applyReconcile = async (scope: ReturnType<typeof ledgerScope>) => {
-    const applied = await reconcileWorkspaceDiff(api, scope)
-    if (applied && controls && controls.scopeID() === scope.id) controls.refresh()
+    const token = (reconcileTokens.get(scope.id) ?? 0) + 1
+    reconcileTokens.set(scope.id, token)
+    const active = () => !disposed && reconcileTokens.get(scope.id) === token
+    const applied = await reconcileWorkspaceDiff(api, scope, active)
+    if (applied && active() && controls && controls.scopeID() === scope.id) controls.refresh()
   }
   const reconcile = async (directory: string | undefined) => applyReconcile(routeScope(api, directory))
   const scheduleReconcile = (scope: ReturnType<typeof ledgerScope>) => {
@@ -30,12 +35,13 @@ const tui: TuiPlugin = async (api, options) => {
         reconcileTimers.delete(timerKey)
         void applyReconcile(scope)
           .catch((error) => {
-            if (controls && controls.scopeID() === scope.id) controls.notice(errorMessage(error), "#f6b26b")
+            if (!disposed && controls && controls.scopeID() === scope.id) controls.notice(errorMessage(error), "#f6b26b")
           })
       }, 500),
     )
   }
   api.lifecycle.onDispose(() => {
+    disposed = true
     for (const timer of reconcileTimers.values()) clearTimeout(timer)
     reconcileTimers.clear()
   })

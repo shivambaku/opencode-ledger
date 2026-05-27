@@ -1,7 +1,7 @@
 {
-  "name": "opencode-ledger",
-  "version": "0.2.1",
-  "description": "TUI review ledger plugin for OpenCode.",
+  "name": "@shivambaku/opencode-ledger",
+  "version": "0.3.0",
+  "description": "Experimental TUI review ledger plugin for OpenCode.",
   "license": "MIT",
   "type": "module",
   "main": "./src/tui.tsx",
@@ -9,12 +9,33 @@
     ".": "./src/tui.tsx",
     "./tui": "./src/tui.tsx"
   },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shivambaku/opencode-ledger.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shivambaku/opencode-ledger/issues"
+  },
+  "homepage": "https://github.com/shivambaku/opencode-ledger#readme",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui",
+    "code-review",
+    "ledger"
+  ],
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "prepublishOnly": "npm run check"
   },
   "dependencies": {
     "@opentui/core": "0.2.10",
-    "@opentui/keymap": "0.2.10",
     "@opentui/solid": "0.2.10",
     "solid-js": "1.9.12"
   },
