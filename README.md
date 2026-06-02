@@ -1,6 +1,6 @@
 # opencode-ledger
 
-Experimental TUI review ledger plugin for OpenCode.
+Experimental code review agent and TUI review ledger plugin for OpenCode.
 
 > Note: opencode-ledger is an independent project and is not built by, affiliated with, or endorsed by the OpenCode team.
 
