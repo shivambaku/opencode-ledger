@@ -29,6 +29,26 @@ Restart OpenCode after changing config. OpenCode installs npm plugins automatica
 
 Open Ledger from the command palette or with `/ledger`. Press `?` inside Ledger for help.
 
+## How it works
+
+Ledger lists changed files, lets you inspect each diff hunk, asks your OpenCode model for explanations, and tracks which blocks you have approved locally.
+
+## Important keys
+
+- `j` / `k`: move selection or diff cursor
+- `J` / `K`: next or previous block
+- `n` / `N`: next or previous block
+- `]` / `[`: next or previous file
+- `enter`: open file diff or switch explanation focus
+- `space`: approve selected file or active block
+- `a`: analyze selected file
+- `A`: analyze all pending files
+- `tab`: show or hide explanation
+- `c`: add or edit block comment
+- `m`: generate commit message
+- `esc`: back
+- `q`: close Ledger
+
 ## Privacy and storage
 
 - Ledger stores local review state in `.opencode/ledger/state.json` inside the reviewed repository.
@@ -43,18 +63,9 @@ Open Ledger from the command palette or with `/ledger`. Press `?` inside Ledger 
 - If you already have plugins configured, add `@shivambaku/opencode-ledger` to the existing `plugin` array instead of replacing it.
 - If analysis has no files to show, make sure OpenCode is running inside a git repository with local changes.
 
-## Development
+## Local development
 
-Clone Ledger somewhere stable and install dependencies:
-
-```bash
-mkdir -p ~/opencode-plugins
-git clone https://github.com/shivambaku/opencode-ledger.git ~/opencode-plugins/opencode-ledger
-cd ~/opencode-plugins/opencode-ledger
-npm install
-```
-
-Use the local source path in your OpenCode TUI config:
+Use a local source path in your OpenCode TUI config:
 
 ```json
 {
@@ -63,10 +74,4 @@ Use the local source path in your OpenCode TUI config:
 }
 ```
 
-Replace `/Users/you` with your actual home directory path.
-
-Run the type check:
-
-```bash
-npm run check
-```
+Replace `/Users/you` with your actual path. Restart OpenCode after changing the config.

@@ -107,7 +107,7 @@ const helpRows: HelpRow[] = [
   { section: "Diff View", keys: "j / k", desc: "Move diff cursor" },
   { section: "Diff View", keys: "h / l", desc: "Scroll diff horizontally" },
   { section: "Diff View", keys: "ctrl+d / ctrl+u", desc: "Scroll diff by half a page" },
-  { section: "Diff View", keys: "n / N", desc: "Next or previous block" },
+  { section: "Diff View", keys: "J / K, n / N", desc: "Next or previous block" },
   { section: "Diff View", keys: "space", desc: "Toggle active block approval" },
   { section: "Diff View", keys: "tab", desc: "Show or hide explanation" },
   { section: "Diff View", keys: "enter", desc: "Focus explanation when visible" },
@@ -122,7 +122,7 @@ const helpRows: HelpRow[] = [
   { section: "Explanation", keys: "enter", desc: "Focus diff" },
   { section: "Explanation", keys: "tab", desc: "Hide explanation" },
   { section: "Explanation", keys: "esc", desc: "Return focus to diff" },
-  { section: "General", keys: "J / K", desc: "Next or previous file" },
+  { section: "General", keys: "] / [", desc: "Next or previous file" },
   { section: "General", keys: "m", desc: "Generate commit message" },
   { section: "General", keys: "?", desc: "Toggle help" },
   { section: "General", keys: "q", desc: "Close ledger" },
@@ -235,6 +235,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   let statePollTimer: ReturnType<typeof setInterval> | undefined
   let analyzingFrameTimer: ReturnType<typeof setInterval> | undefined
   let lastStateVersion = 0
+  let completedFileForBack: { index: number; fileID: string } | undefined
   const activeAnalysisSessions = new Map<string, LedgerScope>()
   const deferredTimers = new Set<ReturnType<typeof setTimeout>>()
   const ANALYSIS_CONCURRENCY = 2
@@ -370,6 +371,22 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const bottom = top + visibleRows() - 1
     if (nextIndex < top) setScroll(nextIndex)
     else if (nextIndex > bottom) setScroll(clip(nextIndex - visibleRows() + 1, 0, Math.max(0, files().length - visibleRows())))
+  }
+
+  function focusFileIndex(nextIndex: number) {
+    const clipped = clip(nextIndex, 0, files().length - 1)
+    setCursor(clipped)
+    focusDiffLine(files()[clipped])
+    keepSelectedVisible(clipped)
+  }
+
+  function nearestUnreviewedFileIndex(fromIndex: number) {
+    const list = files()
+    if (!list.length) return -1
+    const start = clip(fromIndex, 0, list.length - 1)
+    for (let i = start; i < list.length; i++) if (fileNeedsApproval(list[i])) return i
+    for (let i = start - 1; i >= 0; i--) if (fileNeedsApproval(list[i])) return i
+    return -1
   }
 
   function displayRowBelongsToBlock(row: VisibleDiffLine, block: LedgerBlock) {
@@ -538,13 +555,6 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       if (nextIndex >= 0) setCursor(nextIndex)
       keepSelectedVisible(nextIndex >= 0 ? nextIndex : index())
     } else keepSelectedVisible()
-  }
-
-  function refreshAtIndex(nextIndex: number) {
-    setRevision((value) => value + 1)
-    const clipped = clip(nextIndex, 0, Math.max(0, files().length - 1))
-    setCursor(clipped)
-    keepSelectedVisible(clipped)
   }
 
   function withActiveBlock(action: (file: LedgerFile, block: LedgerBlock) => void) {
@@ -783,10 +793,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     cancelComment: () => setCommentEditor(undefined),
     move(delta) {
       if (!files().length) return
-      const nextIndex = clip(index() + delta, 0, files().length - 1)
-      setCursor(nextIndex)
-      focusDiffLine(files()[nextIndex])
-      keepSelectedVisible(nextIndex)
+      completedFileForBack = undefined
+      focusFileIndex(index() + delta)
     },
     scrollDiff(delta) {
       const rows = displayDiffRows()
@@ -845,17 +853,20 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
         if (!block) return
         const previousRow = activeDisplayRow()
         const previousIndex = activeDisplayIndex()
+        const previousFileIndex = index()
         const nextResolved = !block.resolved
+        const completesFile = nextResolved && file.blocks.every((item) => (item.id === block.id ? true : blockApproved(item)))
         setBlockResolved(scope(), file.id, block.id, nextResolved)
+        if (completesFile) completedFileForBack = { index: previousFileIndex, fileID: file.id }
+        else if (!nextResolved) completedFileForBack = undefined
         refresh(file.id)
         const nextCursor = cursorAfterRowsChange(previousRow, previousIndex)
         setDiffCursor(nextCursor)
         keepDisplayRowVisible(nextCursor)
         return
       }
-      const nextIndex = index()
       setFileResolved(scope(), file.id, !fileApproved(file))
-      refreshAtIndex(nextIndex)
+      refresh(file.id)
     },
     editor() {
       withActiveBlock((file, block) => {
@@ -919,9 +930,19 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
           setInspectFocus("diff")
           return
         }
+        const completedFile = completedFileForBack
+        const fallbackFile = selected()
+        const fallbackID = fallbackFile?.id
         setInspect(false)
         setInspectFocus("diff")
         setExplanationVisible(false)
+        completedFileForBack = undefined
+        if (completedFile && fallbackFile?.id === completedFile.fileID && fileApproved(fallbackFile)) {
+          const nextIndex = nearestUnreviewedFileIndex(completedFile.index)
+          const fallbackIndex = fallbackID ? files().findIndex((file) => file.id === fallbackID) : -1
+          const targetIndex = nextIndex >= 0 ? nextIndex : fallbackIndex
+          if (targetIndex >= 0) focusFileIndex(targetIndex)
+        }
       }
       else closeLedger(props.api)
     },

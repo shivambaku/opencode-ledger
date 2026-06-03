@@ -1,7 +1,7 @@
 {
   "name": "@shivambaku/opencode-ledger",
   "version": "0.3.0",
-  "description": "Experimental TUI review ledger plugin for OpenCode.",
+  "description": "Experimental code review agent and TUI review ledger plugin for OpenCode.",
   "license": "MIT",
   "type": "module",
   "main": "./src/tui.tsx",
