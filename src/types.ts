@@ -99,7 +99,8 @@ export type InspectFocus = "diff" | "explanation"
 export type InspectLayout = "side" | "bottom"
 export type VisibleDiffKind = "code" | "add" | "delete"
 export type VisibleDiffLine = { key: string; line: string; rowIndex: number; kind: VisibleDiffKind; blockID?: string; diffLineIndex?: number; fileLine?: number }
-export type LedgerNotice = { text: string; fg: string }
+export type NoticeTone = "muted" | "info" | "success" | "warning" | "error"
+export type LedgerNotice = { text: string; tone: NoticeTone }
 export type LedgerScope = { id: string; directory: string }
 
 export type LedgerControls = {
@@ -126,6 +127,6 @@ export type LedgerControls = {
   back(): void
   close(): void
   refresh(preserveID?: string): void
-  notice(text: string, fg?: string): void
+  notice(text: string, tone?: NoticeTone): void
   handleKey(key: LedgerKey): boolean
 }

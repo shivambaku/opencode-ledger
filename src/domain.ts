@@ -1,5 +1,5 @@
 import type { FileStatus, LedgerBlock, LedgerFile } from "./types"
-import { filename } from "./utils"
+import { pathToFiletype } from "@opentui/core"
 
 export function blockReviewed(block: LedgerBlock) {
   return block.review?.hash === block.hash
@@ -79,14 +79,6 @@ export function blockLabel(file: LedgerFile, block: LedgerBlock) {
 }
 
 export function codeFiletype(path: string) {
-  const name = filename(path).toLowerCase()
-  if (name.endsWith(".vue")) return "typescript"
-  if (name.endsWith(".tsx")) return "typescriptreact"
-  if (name.endsWith(".ts")) return "typescript"
-  if (name.endsWith(".jsx")) return "javascriptreact"
-  if (name.endsWith(".js")) return "javascript"
-  if (name.endsWith(".md")) return "markdown"
-  if (name.endsWith(".json")) return "json"
-  if (name.endsWith(".rs")) return "rust"
-  return undefined
+  if (path.toLowerCase().endsWith(".vue")) return "typescript"
+  return pathToFiletype(path)
 }

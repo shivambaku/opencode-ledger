@@ -2,7 +2,7 @@
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import type { BoxRenderable, KeyEvent, TextareaOptions, TextareaRenderable } from "@opentui/core"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { TuiPluginApi, TuiThemeCurrent } from "@opencode-ai/plugin/tui"
 import { abortSession, deleteSession, requestAnalysis, requestCommitMessage } from "../analysis"
 import { blockContainsFileLine, blockForFileLine, blockHunkStart, buildDisplayRows, diffLineForFileLine } from "../display"
 import { blockApproved, blockComment, blockLabel, blockReviewed, blockStale, codeFiletype, fileApproved, fileImpact, fileNeedsAnalysis, fileNeedsApproval, fileRow, fileStatusMark, lineRangeText, unresolvedCommentCount } from "../domain"
@@ -10,12 +10,12 @@ import { openEditor } from "../editor"
 import { ledgerAction } from "../keys"
 import { closeLedger, writeClipboard, yankBlockToClipboard, yankUnresolvedCommentsToClipboard } from "../runtime"
 import { currentFile, ledgerFiles, ledgerStateVersion, routeScope, setBlockComment, setBlockResolved, setFileAnalysisResult, setFileResolved } from "../storage"
-import type { InspectFocus, InspectLayout, LedgerAction, LedgerBlock, LedgerControls, LedgerFile, LedgerNotice, LedgerScope, VisibleDiffLine } from "../types"
+import type { InspectFocus, InspectLayout, LedgerAction, LedgerBlock, LedgerControls, LedgerFile, LedgerNotice, LedgerScope, NoticeTone, VisibleDiffLine } from "../types"
 import { clip, errorMessage, fileLines, filename, parseRouteParams, splitWidths, wrapText } from "../utils"
 import { DiffLine } from "./DiffLine"
-import { codeSyntax } from "./styles"
+import { createCodeSyntax, selectedForeground } from "./styles"
 
-type ExplanationRow = { text: string; muted?: boolean; fg?: string }
+type ExplanationRow = { text: string; muted?: boolean; tone?: NoticeTone }
 type HelpRow = { section: string; keys: string; desc: string }
 type PanelLayout = { height?: number; flexGrow?: number; flexShrink?: number; flexBasis?: number | "auto"; minHeight?: number }
 type LedgerExplanation = NonNullable<LedgerBlock["review"]>["explanations"][number]
@@ -33,7 +33,7 @@ const commentKeyBindings = [
   { name: "j", ctrl: true, action: "newline" },
 ] satisfies NonNullable<TextareaOptions["keyBindings"]>
 
-function CommentDialog(props: { title: string; initialValue: string; onSave(value: string): void; onCancel(): void }) {
+function CommentDialog(props: { title: string; initialValue: string; theme: TuiThemeCurrent; onSave(value: string): void; onCancel(): void }) {
   let textarea: TextareaRenderable | undefined
   const dim = useTerminalDimensions()
   const [draft, setDraft] = createSignal(props.initialValue)
@@ -64,9 +64,9 @@ function CommentDialog(props: { title: string; initialValue: string; onSave(valu
   })
 
   return (
-    <box position="absolute" zIndex={20} left={left()} top={top()} width={width()} height={height()} border borderColor="#86aef5" backgroundColor="#090d16" paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
-      <text width={innerWidth()} fg="#f0f4ff" truncate wrapMode="none"><b>{props.title}</b></text>
-      <text fg="#8b96b8"> </text>
+    <box position="absolute" zIndex={20} left={left()} top={top()} width={width()} height={height()} border borderColor={props.theme.borderActive} backgroundColor={props.theme.backgroundPanel} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
+      <text width={innerWidth()} fg={props.theme.text} truncate wrapMode="none"><b>{props.title}</b></text>
+      <text fg={props.theme.textMuted}> </text>
       <box width={innerWidth()} height={bodyHeight()} overflow="hidden">
         <textarea
           ref={(node) => {
@@ -78,20 +78,20 @@ function CommentDialog(props: { title: string; initialValue: string; onSave(valu
           height={bodyHeight()}
           initialValue={props.initialValue}
           wrapMode="word"
-          textColor="#d5dcf6"
-          focusedTextColor="#f0f4ff"
-          backgroundColor="#090d16"
-          focusedBackgroundColor="#090d16"
+          textColor={props.theme.text}
+          focusedTextColor={props.theme.text}
+          backgroundColor={props.theme.backgroundElement}
+          focusedBackgroundColor={props.theme.backgroundElement}
           placeholder="Add a comment for this block..."
-          placeholderColor="#5e6a86"
+          placeholderColor={props.theme.textMuted}
           keyBindings={commentKeyBindings}
           onSubmit={save}
           onContentChange={setDraft}
           onKeyPress={handleKey}
         />
       </box>
-      <text fg="#8b96b8"> </text>
-      <text width={innerWidth()} fg="#8b96b8" truncate wrapMode="none">enter save   shift+enter newline   esc cancel</text>
+      <text fg={props.theme.textMuted}> </text>
+      <text width={innerWidth()} fg={props.theme.textMuted} truncate wrapMode="none">enter save   shift+enter newline   esc cancel</text>
     </box>
   )
 }
@@ -132,7 +132,9 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   let root: BoxRenderable | undefined
   const dim = useTerminalDimensions()
   const route = parseRouteParams(props.params)
-  const syntaxStyle = codeSyntax(props.api)
+  const theme = props.api.theme.current
+  const selectedText = createMemo(() => selectedForeground(theme))
+  const syntaxStyle = createCodeSyntax(props.api)
   const [cursor, setCursor] = createSignal(route.index)
   const [scroll, setScroll] = createSignal(route.scroll)
   const [diffScroll, setDiffScroll] = createSignal(0)
@@ -265,11 +267,11 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
 
   function fileStatusColor(file: LedgerFile, muted: boolean) {
-    if (muted) return "#78839f"
+    if (muted) return theme.textMuted
     const mark = fileStatusMark(file)
-    if (mark === "A") return "#65f090"
-    if (mark === "D") return "#ff7aa8"
-    return "#86aef5"
+    if (mark === "A") return theme.diffAdded
+    if (mark === "D") return theme.diffRemoved
+    return theme.info
   }
 
   function setAnalyzing(id: string, analyzing: boolean) {
@@ -293,10 +295,18 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     }
   })
 
-  function showLedgerNotice(text: string, fg = "#8b96b8") {
+  function toneColor(tone: NoticeTone) {
+    if (tone === "success") return theme.success
+    if (tone === "warning") return theme.warning
+    if (tone === "error") return theme.error
+    if (tone === "info") return theme.info
+    return theme.textMuted
+  }
+
+  function showLedgerNotice(text: string, tone: NoticeTone = "muted") {
     if (disposed) return
     if (noticeTimer) clearTimeout(noticeTimer)
-    setNotice({ text, fg })
+    setNotice({ text, tone })
     noticeTimer = setTimeout(() => {
       if (!disposed) setNotice(undefined)
     }, 2200)
@@ -489,7 +499,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
 
     const comment = blockComment(block)
     return [
-      { text: `Block ${lineRangeText(block)} ${block.resolved ? "approved" : "needs approval"}${comment ? " · commented" : ""}`, fg: block.resolved ? "#3ee06f" : "#86aef5" },
+      { text: `Block ${lineRangeText(block)} ${block.resolved ? "approved" : "needs approval"}${comment ? " · commented" : ""}`, tone: block.resolved ? "success" : "info" },
       ...(comment ? [{ text: "Comment", muted: true }, ...wrapText(comment, width).map((text) => ({ text, muted: true }))] : []),
       { text: " " },
       ...explanationBodyRows(file, block, width),
@@ -573,7 +583,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     setBlockComment(scope(), editor.file.id, editor.block.id, comment)
     setCommentEditor(undefined)
     refresh(editor.file.id)
-    showLedgerNotice(comment ? `${editor.hadComment ? "Updated" : "Saved"} comment for ${blockLabel(editor.file, editor.block)}.` : `Cleared comment for ${blockLabel(editor.file, editor.block)}.`, comment ? "#3ee06f" : "#8b96b8")
+    showLedgerNotice(comment ? `${editor.hadComment ? "Updated" : "Saved"} comment for ${blockLabel(editor.file, editor.block)}.` : `Cleared comment for ${blockLabel(editor.file, editor.block)}.`, comment ? "success" : "muted")
   }
 
   async function analyzeFile(fileID: string, token: number) {
@@ -592,9 +602,9 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       const preserveID = selected()?.id
       setFileAnalysisResult(fileScope, fileID, file.hash, result.analysis, result.reviews)
       refresh(preserveID)
-      showLedgerNotice(`Analyzed ${file.path}.`, "#3ee06f")
+      showLedgerNotice(`Analyzed ${file.path}.`, "success")
     } catch (error) {
-      if (analysisActive(token)) showLedgerNotice(errorMessage(error), "#f6b26b")
+      if (analysisActive(token)) showLedgerNotice(errorMessage(error), "error")
     } finally {
       if (sessionID) await deleteAnalysisSession(sessionID, fileScope)
       if (analysisActive(token)) setAnalyzing(fileID, false)
@@ -652,9 +662,9 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       if (!analysisActive(token)) return
       const ok = await writeClipboard(props.api, result.text)
       const context = commitMessageContextText(result)
-      showLedgerNotice(ok ? `Yanked commit message (${context}).` : `Generated commit message (${context}), but clipboard unavailable.`, ok ? "#3ee06f" : "#f6b26b")
+      showLedgerNotice(ok ? `Yanked commit message (${context}).` : `Generated commit message (${context}), but clipboard unavailable.`, ok ? "success" : "warning")
     } catch (error) {
-      if (analysisActive(token)) showLedgerNotice(errorMessage(error), "#f6b26b")
+      if (analysisActive(token)) showLedgerNotice(errorMessage(error), "error")
     } finally {
       if (sessionID) await deleteAnalysisSession(sessionID, fileScope)
       if (analysisActive(token)) setGeneratingCommitMessage(false)
@@ -690,22 +700,22 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const statusWidth = () => (showStatus() ? Math.min(statusText().length, Math.max(1, innerWidth - 1)) : 0)
     const pathWidth = () => Math.max(1, innerWidth - statusWidth())
     return (
-      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspect() && inspectFocus() === "diff" ? "#86aef5" : "#263149"} paddingLeft={2} paddingRight={2}>
+      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspect() && inspectFocus() === "diff" ? theme.borderActive : theme.border} paddingLeft={2} paddingRight={2}>
         {file ? (
           <box flexDirection="column" overflow="hidden" flexGrow={1}>
             <box width={innerWidth} overflow="hidden" flexDirection="row" justifyContent="space-between" paddingBottom={1}>
-              <text width={pathWidth()} fg="#f0f4ff" truncate wrapMode="none">{file.path}</text>
+              <text width={pathWidth()} fg={theme.text} truncate wrapMode="none">{file.path}</text>
               <Show when={showStatus()}>
-                <text width={statusWidth()} fg="#8b96b8" truncate wrapMode="none">{statusText()}</text>
+                <text width={statusWidth()} fg={theme.textMuted} truncate wrapMode="none">{statusText()}</text>
               </Show>
             </box>
             <For each={visibleDiffLines()}>{(line) => {
               const active = () => inspect() && line.rowIndex === activeDisplayIndex()
               const explanationRegion = () => inspect() && rowInReviewedExplanationRegion(line)
-              return <DiffLine line={line.line} width={innerWidth} scrollX={horizontalScroll()} kind={line.kind} active={active()} blockActive={inspect() && rowHasActiveGutter(line)} explanationActive={explanationRegion()} blockResolved={!!activeBlock()?.resolved} path={file.path} filetype={selectedFiletype()} syntaxStyle={syntaxStyle} />
+              return <DiffLine line={line.line} width={innerWidth} scrollX={horizontalScroll()} kind={line.kind} active={active()} blockActive={inspect() && rowHasActiveGutter(line)} explanationActive={explanationRegion()} blockResolved={!!activeBlock()?.resolved} path={file.path} filetype={selectedFiletype()} syntaxStyle={syntaxStyle()} theme={theme} />
             }}</For>
           </box>
-        ) : <text fg="#8b96b8">No uncommitted Git changes. Make changes, then open Ledger again.</text>}
+        ) : <text fg={theme.textMuted}>No uncommitted Git changes. Make changes, then open Ledger again.</text>}
       </box>
     )
   }
@@ -720,22 +730,22 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const footerText = () => `${clip(helpCursor(), 0, helpRows.length - 1) + 1}/${helpRows.length}   j/k move  ctrl+d/u page  ?/esc close`
 
     return (
-      <box position="absolute" zIndex={20} left={helpLeft()} top={helpTop()} width={helpWidth()} height={helpHeight()} border borderColor="#86aef5" backgroundColor="#090d16" paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
-        <text fg="#f0f4ff"><b>Ledger Help</b></text>
-        <text fg="#8b96b8"> </text>
+      <box position="absolute" zIndex={20} left={helpLeft()} top={helpTop()} width={helpWidth()} height={helpHeight()} border borderColor={theme.borderActive} backgroundColor={theme.backgroundMenu} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
+        <text fg={theme.text}><b>Ledger Help</b></text>
+        <text fg={theme.textMuted}> </text>
         <For each={visibleRows}>{(row, offset) => {
           const rowIndex = () => start + offset()
           const active = () => rowIndex() === helpCursor()
           return (
-          <box flexDirection="row" overflow="hidden" backgroundColor={active() ? "#86aef5" : undefined}>
-            <text width={sectionWidth} fg={active() ? "#07101f" : "#86aef5"} truncate wrapMode="none">{row.section}</text>
-            <text width={keyWidth} fg={active() ? "#07101f" : "#f0f4ff"} truncate wrapMode="none">{row.keys}</text>
-            <text width={descWidth()} fg={active() ? "#07101f" : "#d5dcf6"} truncate wrapMode="none">{row.desc}</text>
+          <box flexDirection="row" overflow="hidden" backgroundColor={active() ? theme.primary : undefined}>
+            <text width={sectionWidth} fg={active() ? selectedText() : theme.primary} truncate wrapMode="none">{row.section}</text>
+            <text width={keyWidth} fg={active() ? selectedText() : theme.text} truncate wrapMode="none">{row.keys}</text>
+            <text width={descWidth()} fg={active() ? selectedText() : theme.text} truncate wrapMode="none">{row.desc}</text>
           </box>
           )
         }}</For>
-        <text fg="#8b96b8"> </text>
-        <text fg="#8b96b8" truncate wrapMode="none">{footerText()}</text>
+        <text fg={theme.textMuted}> </text>
+        <text fg={theme.textMuted} truncate wrapMode="none">{footerText()}</text>
       </box>
     )
   }
@@ -745,8 +755,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const rows = explanationRows(innerWidth)
     const start = clip(explanationScroll(), 0, Math.max(0, rows.length - explanationVisibleRows()))
     return (
-      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspectFocus() === "explanation" ? "#86aef5" : "#263149"} paddingLeft={2} paddingRight={2}>
-        <For each={rows.slice(start, start + explanationVisibleRows())}>{(row) => <text fg={row.fg ?? (row.muted ? "#8b96b8" : "#d5dcf6")}>{row.text}</text>}</For>
+      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspectFocus() === "explanation" ? theme.borderActive : theme.border} paddingLeft={2} paddingRight={2}>
+        <For each={rows.slice(start, start + explanationVisibleRows())}>{(row) => <text fg={row.tone ? toneColor(row.tone) : row.muted ? theme.textMuted : theme.text}>{row.text}</text>}</For>
       </box>
     )
   }
@@ -821,9 +831,9 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       withActiveBlock((file, block) => {
         void yankBlockToClipboard(props.api, file, block)
           .then((ok) => {
-            showLedgerNotice(ok ? `Yanked ${blockLabel(file, block)}.` : "Clipboard unavailable.", ok ? "#3ee06f" : "#f6b26b")
+            showLedgerNotice(ok ? `Yanked ${blockLabel(file, block)}.` : "Clipboard unavailable.", ok ? "success" : "warning")
           })
-          .catch((error) => showLedgerNotice(errorMessage(error), "#f6b26b"))
+          .catch((error) => showLedgerNotice(errorMessage(error), "error"))
       })
     },
     yankComments() {
@@ -834,9 +844,9 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       }
       void yankUnresolvedCommentsToClipboard(props.api, files())
         .then((result) => {
-          showLedgerNotice(result.ok ? `Yanked ${result.count} unresolved commented ${result.count === 1 ? "block" : "blocks"}.` : "Clipboard unavailable.", result.ok ? "#3ee06f" : "#f6b26b")
+          showLedgerNotice(result.ok ? `Yanked ${result.count} unresolved commented ${result.count === 1 ? "block" : "blocks"}.` : "Clipboard unavailable.", result.ok ? "success" : "warning")
         })
-        .catch((error) => showLedgerNotice(errorMessage(error), "#f6b26b"))
+        .catch((error) => showLedgerNotice(errorMessage(error), "error"))
     },
     comment() {
       if (!inspect()) {
@@ -865,12 +875,16 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
         keepDisplayRowVisible(nextCursor)
         return
       }
-      setFileResolved(scope(), file.id, !fileApproved(file))
-      refresh(file.id)
+      const previousIndex = index()
+      const nextResolved = !fileApproved(file)
+      setFileResolved(scope(), file.id, nextResolved)
+      setRevision((value) => value + 1)
+      const nextIndex = nextResolved ? previousIndex : files().findIndex((item) => item.id === file.id)
+      focusFileIndex(nextIndex >= 0 ? nextIndex : previousIndex)
     },
     editor() {
       withActiveBlock((file, block) => {
-        void openEditor(props.api, scope(), file, block).then((result) => showLedgerNotice(result.text, result.fg))
+        void openEditor(props.api, scope(), file, block).then((result) => showLedgerNotice(result.text, result.tone))
       })
     },
     inspect() {
@@ -997,7 +1011,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     }, 1000)
     focusDiffLine(selected())
     props.registerControls(controls)
-    void props.reconcileWorkspace(route.directory).then(() => refresh()).catch((error) => showLedgerNotice(errorMessage(error), "#f6b26b"))
+    void props.reconcileWorkspace(route.directory).then(() => refresh()).catch((error) => showLedgerNotice(errorMessage(error), "error"))
     setTimeout(() => root?.focus(), 0)
   })
 
@@ -1031,14 +1045,14 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       paddingTop={1}
       paddingLeft={2}
       paddingRight={2}
-      backgroundColor="#070a10"
+      backgroundColor={theme.background}
     >
       <box width={headerWidth()} height={1} marginLeft={1} marginRight={1} flexDirection="row" alignItems="flex-start" justifyContent="space-between" paddingBottom={0}>
         <box height={1} flexDirection="row">
-          <text fg="#d9e2ff"><b>Ledger</b> <span style={{ fg: "#8b96b8" }}>{approvedBlocks()}/{totalBlocks()} approved{commentCountText()}</span></text>
+          <text fg={theme.text}><b>Ledger</b> <span style={{ fg: theme.textMuted }}>{approvedBlocks()}/{totalBlocks()} approved{commentCountText()}</span></text>
         </box>
         <box height={1} width={headerHelpWidth()} flexDirection="row" alignItems="flex-start" justifyContent="flex-end" overflow="hidden">
-          <text width={headerHelpTextWidth()} fg={notice()?.fg ?? "#8b96b8"} truncate wrapMode="none">{headerHelpText()}</text>
+          <text width={headerHelpTextWidth()} fg={notice() ? toneColor(notice()!.tone) : theme.textMuted} truncate wrapMode="none">{headerHelpText()}</text>
         </box>
       </box>
       {inspect() ? (
@@ -1057,7 +1071,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
         )
       ) : (
         <box flexDirection="row" gap={1} flexGrow={1}>
-          <box width={normalWidths().left} flexDirection="column" border borderColor="#86aef5" paddingLeft={1} paddingRight={1}>
+          <box width={normalWidths().left} flexDirection="column" border borderColor={theme.borderActive} paddingLeft={1} paddingRight={1}>
             <For each={shownFiles()}>{(file) => {
               const on = () => file.id === selected()?.id
               const approved = () => fileApproved(file)
@@ -1069,13 +1083,13 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
               const name = () => filename(file.path)
               const fixedWidth = () => baseText().length + additions().length + deletions().length + 5
               const nameWidth = () => Math.max(1, fileListInnerWidth() - fixedWidth())
-              const textColor = () => (muted() ? "#78839f" : "#d5dcf6")
-              const addColor = () => (muted() ? "#78839f" : "#65f090")
-              const deleteColor = () => (muted() ? "#78839f" : "#ff7aa8")
+              const textColor = () => (on() ? selectedText() : muted() ? theme.textMuted : theme.text)
+              const addColor = () => (on() ? selectedText() : muted() ? theme.textMuted : theme.diffAdded)
+              const deleteColor = () => (on() ? selectedText() : muted() ? theme.textMuted : theme.diffRemoved)
               return (
-                <box flexDirection="row" overflow="hidden" backgroundColor={on() ? "#1b2540" : undefined}>
-                  <text width={baseText().length + 1} flexShrink={0} fg={muted() ? "#78839f" : "#d5dcf6"} truncate wrapMode="none">{baseText()} </text>
-                  <text width={2} flexShrink={0} fg={fileStatusColor(file, muted())} truncate wrapMode="none">{status()} </text>
+                <box flexDirection="row" overflow="hidden" backgroundColor={on() ? theme.primary : undefined}>
+                  <text width={baseText().length + 1} flexShrink={0} fg={textColor()} truncate wrapMode="none">{baseText()} </text>
+                  <text width={2} flexShrink={0} fg={on() ? selectedText() : fileStatusColor(file, muted())} truncate wrapMode="none">{status()} </text>
                   <text width={nameWidth()} fg={textColor()} truncate wrapMode="none">{name()}</text>
                   <text width={additions().length + 1} flexShrink={0} fg={addColor()} truncate wrapMode="none"> {additions()}</text>
                   <text width={deletions().length + 1} flexShrink={0} fg={deleteColor()} truncate wrapMode="none"> {deletions()}</text>
@@ -1091,6 +1105,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
         <CommentDialog
           title={`Comment for ${blockLabel(editor().file, editor().block)}`}
           initialValue={editor().block.comment ?? ""}
+          theme={theme}
           onSave={(value) => saveBlockComment(editor(), value)}
           onCancel={() => setCommentEditor(undefined)}
         />

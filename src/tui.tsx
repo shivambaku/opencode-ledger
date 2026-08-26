@@ -3,11 +3,14 @@ import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
 import { command, ledgerActionConfigs, ledgerKeyBindings, ROUTE } from "./constants"
 import { fileNeedsApproval } from "./domain"
 import { reconcileWorkspaceDiff } from "./git"
+import { registerCommonParsers } from "./parsers"
 import { activeLedger, openLedger } from "./runtime"
 import { ledgerScope, readFilesForScope, routeScope } from "./storage"
 import type { LedgerControls } from "./types"
 import { errorMessage } from "./utils"
 import { LedgerScreen } from "./ui/LedgerScreen"
+
+registerCommonParsers()
 
 const tui: TuiPlugin = async (api, options) => {
   let controls: LedgerControls | undefined
@@ -35,7 +38,7 @@ const tui: TuiPlugin = async (api, options) => {
         reconcileTimers.delete(timerKey)
         void applyReconcile(scope)
           .catch((error) => {
-            if (!disposed && controls && controls.scopeID() === scope.id) controls.notice(errorMessage(error), "#f6b26b")
+            if (!disposed && controls && controls.scopeID() === scope.id) controls.notice(errorMessage(error), "error")
           })
       }, 500),
     )

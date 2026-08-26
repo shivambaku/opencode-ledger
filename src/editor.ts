@@ -1,8 +1,8 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import type { LedgerBlock, LedgerFile, LedgerScope } from "./types"
+import type { LedgerBlock, LedgerFile, LedgerScope, NoticeTone } from "./types"
 import { filename, shellQuote, splitCommand } from "./utils"
 
-type EditorResult = { text: string; fg?: string }
+type EditorResult = { text: string; tone: NoticeTone }
 
 function editorCommand(editor: string, file: string, line: number) {
   const parts = splitCommand(editor)
@@ -16,12 +16,12 @@ function editorCommand(editor: string, file: string, line: number) {
 
 export async function openEditor(api: TuiPluginApi, scope: LedgerScope, file: LedgerFile, block: LedgerBlock): Promise<EditorResult> {
   if (file.status === "deleted") {
-    return { text: "Deleted files cannot be opened from Ledger.", fg: "#f6b26b" }
+    return { text: "Deleted files cannot be opened from Ledger.", tone: "warning" }
   }
 
   const editor = process.env.VISUAL || process.env.EDITOR
   if (!editor) {
-    return { text: "Set VISUAL or EDITOR to open files from Ledger.", fg: "#f6b26b" }
+    return { text: "Set VISUAL or EDITOR to open files from Ledger.", tone: "warning" }
   }
 
   const line = block.newStart || block.oldStart || 1
@@ -29,7 +29,7 @@ export async function openEditor(api: TuiPluginApi, scope: LedgerScope, file: Le
   const command = editorCommand(editor, path, line)
   const bun = (globalThis as unknown as { Bun?: { spawn?: (cmd: string[], options: Record<string, unknown>) => { exited: Promise<number> } } }).Bun
   if (!bun?.spawn) {
-    return { text: "Bun.spawn is unavailable in this plugin runtime.", fg: "#f6b26b" }
+    return { text: "Bun.spawn is unavailable in this plugin runtime.", tone: "error" }
   }
 
   try {
@@ -43,14 +43,14 @@ export async function openEditor(api: TuiPluginApi, scope: LedgerScope, file: Le
     })
     const code = await proc.exited
     if (code !== 0) {
-      return { text: `Editor exited with status ${code}.`, fg: "#f6b26b" }
+      return { text: `Editor exited with status ${code}.`, tone: "error" }
     }
   } catch (error) {
-    return { text: error instanceof Error ? error.message : "Failed to open editor.", fg: "#f6b26b" }
+    return { text: error instanceof Error ? error.message : "Failed to open editor.", tone: "error" }
   } finally {
     api.renderer.currentRenderBuffer.clear()
     api.renderer.resume()
     api.renderer.requestRender()
   }
-  return { text: `Opened ${file.path}.`, fg: "#3ee06f" }
+  return { text: `Opened ${file.path}.`, tone: "success" }
 }

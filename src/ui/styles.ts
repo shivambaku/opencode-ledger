@@ -1,49 +1,42 @@
-import { SyntaxStyle } from "@opentui/core"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import { RGBA, SyntaxStyle } from "@opentui/core"
+import type { TuiPluginApi, TuiThemeCurrent } from "@opencode-ai/plugin/tui"
+import { createMemo, onCleanup } from "solid-js"
 import type { VisibleDiffKind } from "../types"
 
-function lineColor(line: string) {
-  if (line.startsWith("+++ ") || line.startsWith("--- ")) return "#a8b3cf"
-  if (line.startsWith("+")) return "#3ee06f"
-  if (line.startsWith("-")) return "#ff6572"
-  if (line.startsWith("@@")) return "#8fb4ff"
-  if (line.startsWith("Index:") || line.startsWith("=")) return "#a8b3cf"
-  return "#c8d0e8"
+export function rowColor(theme: TuiThemeCurrent, kind: VisibleDiffKind) {
+  if (kind === "add") return theme.diffAdded
+  if (kind === "delete") return theme.diffRemoved
+  return theme.text
 }
 
-export function rowColor(kind: VisibleDiffKind, line: string) {
-  if (kind === "code") return "#c8d0e8"
-  return lineColor(line)
-}
-
-function lineBackground(line: string) {
-  if (line.startsWith("+++ ") || line.startsWith("--- ")) return undefined
-  if (line.startsWith("+")) return "#082813"
-  if (line.startsWith("-")) return "#2f1017"
-  if (line.startsWith("@@")) return "#111a31"
+export function rowBackground(theme: TuiThemeCurrent, kind: VisibleDiffKind) {
+  if (kind === "add") return theme.diffAddedBg
+  if (kind === "delete") return theme.diffRemovedBg
   return undefined
 }
 
-export function rowBackground(kind: VisibleDiffKind, line: string) {
-  if (kind === "code") return undefined
-  return lineBackground(line)
+function tint(base: RGBA, overlay: RGBA, alpha: number) {
+  return RGBA.fromValues(
+    base.r + (overlay.r - base.r) * alpha,
+    base.g + (overlay.g - base.g) * alpha,
+    base.b + (overlay.b - base.b) * alpha,
+  )
 }
 
-function activeLineBackground(line: string) {
-  if (line.startsWith("+++ ") || line.startsWith("--- ")) return "#25314a"
-  if (line.startsWith("+")) return "#145c2b"
-  if (line.startsWith("-")) return "#6b1d26"
-  if (line.startsWith("@@")) return "#24395e"
-  return "#1b2540"
+export function activeRowBackground(theme: TuiThemeCurrent, kind: VisibleDiffKind) {
+  if (kind === "add") return tint(theme.diffAddedBg, theme.diffHighlightAdded, 0.22)
+  if (kind === "delete") return tint(theme.diffRemovedBg, theme.diffHighlightRemoved, 0.22)
+  return theme.backgroundPanel
 }
 
-export function activeRowBackground(kind: VisibleDiffKind, line: string) {
-  if (kind === "code") return "#1b2540"
-  return activeLineBackground(line)
+export function selectedForeground(theme: TuiThemeCurrent) {
+  if (theme.selectedListItemText.a > 0) return theme.selectedListItemText
+  const { r, g, b } = theme.primary
+  const luminance = 0.299 * r + 0.587 * g + 0.114 * b
+  return luminance > 0.5 ? RGBA.fromInts(0, 0, 0) : RGBA.fromInts(255, 255, 255)
 }
 
-export function codeSyntax(api: TuiPluginApi) {
-  const theme = api.theme.current
+function codeSyntax(theme: TuiThemeCurrent) {
   return SyntaxStyle.fromStyles({
     default: { fg: theme.text },
     comment: { fg: theme.syntaxComment, italic: true },
@@ -60,5 +53,59 @@ export function codeSyntax(api: TuiPluginApi) {
     type: { fg: theme.syntaxType },
     module: { fg: theme.syntaxType },
     constant: { fg: theme.syntaxNumber },
+    "character.special": { fg: theme.syntaxString },
+    "markup.heading": { fg: theme.markdownHeading, bold: true },
+    "markup.heading.1": { fg: theme.markdownHeading, bold: true, underline: true },
+    "markup.heading.2": { fg: theme.markdownHeading, bold: true },
+    "markup.heading.3": { fg: theme.markdownHeading, bold: true },
+    "markup.heading.4": { fg: theme.markdownHeading, bold: true },
+    "markup.heading.5": { fg: theme.markdownHeading, bold: true },
+    "markup.heading.6": { fg: theme.markdownHeading, bold: true },
+    "markup.bold": { fg: theme.markdownStrong, bold: true },
+    "markup.strong": { fg: theme.markdownStrong, bold: true },
+    "markup.italic": { fg: theme.markdownEmph, italic: true },
+    "markup.strikethrough": { fg: theme.textMuted },
+    "markup.list": { fg: theme.markdownListItem },
+    "markup.list.checked": { fg: theme.success },
+    "markup.list.unchecked": { fg: theme.textMuted },
+    "markup.quote": { fg: theme.markdownBlockQuote, italic: true },
+    "markup.raw": { fg: theme.markdownCode },
+    "markup.raw.inline": { fg: theme.markdownCode },
+    "markup.raw.block": { fg: theme.markdownCodeBlock },
+    "markup.link": { fg: theme.markdownLink, underline: true },
+    "markup.link.label": { fg: theme.markdownLinkText, underline: true },
+    "markup.link.url": { fg: theme.markdownLink, underline: true },
+    "markup.link.bracket.close": { fg: theme.markdownLink },
+    label: { fg: theme.markdownLinkText },
+    spell: { fg: theme.markdownText },
+    nospell: { fg: theme.markdownText },
+    conceal: { fg: theme.textMuted },
+  })
+}
+
+export function createCodeSyntax(api: TuiPluginApi) {
+  const retained = new Set<SyntaxStyle>()
+  let current: SyntaxStyle | undefined
+
+  const release = (style: SyntaxStyle) => {
+    retained.add(style)
+    void api.renderer
+      .idle()
+      .catch(() => {})
+      .finally(() => {
+        if (!retained.delete(style)) return
+        style.destroy()
+      })
+  }
+
+  onCleanup(() => {
+    if (current) release(current)
+  })
+
+  return createMemo(() => {
+    const previous = current
+    current = codeSyntax(api.theme.current)
+    if (previous) release(previous)
+    return current
   })
 }
