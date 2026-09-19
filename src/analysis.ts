@@ -204,9 +204,9 @@ export async function requestAnalysis(api: TuiPluginApi, scope: LedgerScope, fil
 }
 
 export async function requestCommitMessage(api: TuiPluginApi, scope: LedgerScope, files: LedgerFile[], shouldContinue: () => boolean, modelOption?: unknown, onSession?: (sessionID: string) => void): Promise<CommitMessageResult> {
-  if (!files.length) throw new Error("No uncommitted Git changes.")
+  if (!files.length) throw new Error("No Git changes in the selected view.")
   const model = parseAnalysisModel(modelOption)
-  const request = buildCommitMessagePrompt(files)
+  const request = buildCommitMessagePrompt(files, scope)
   const sessionID = await createAnalysisSession(api, scope, shouldContinue, model, "Ledger commit message")
   onSession?.(sessionID)
   if (!shouldContinue()) throw new Error("Analysis stopped.")

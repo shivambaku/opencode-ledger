@@ -5,7 +5,7 @@ import { fileNeedsApproval } from "./domain"
 import { reconcileWorkspaceDiff } from "./git"
 import { registerCommonParsers } from "./parsers"
 import { activeLedger, openLedger } from "./runtime"
-import { ledgerScope, readFilesForScope, routeScope } from "./storage"
+import { ledgerScope, readFilesForScope } from "./storage"
 import type { LedgerControls } from "./types"
 import { errorMessage } from "./utils"
 import { LedgerScreen } from "./ui/LedgerScreen"
@@ -18,6 +18,10 @@ const tui: TuiPlugin = async (api, options) => {
   const reconcileTokens = new Map<string, number>()
   let disposed = false
   const registerControls = (next?: LedgerControls) => {
+    // The screen owns reconciliation while open; invalidate background requests.
+    for (const [id, token] of reconcileTokens) reconcileTokens.set(id, token + 1)
+    for (const timer of reconcileTimers.values()) clearTimeout(timer)
+    reconcileTimers.clear()
     controls = next
   }
   const applyReconcile = async (scope: ReturnType<typeof ledgerScope>) => {
@@ -27,7 +31,6 @@ const tui: TuiPlugin = async (api, options) => {
     const applied = await reconcileWorkspaceDiff(api, scope, active)
     if (applied && active() && controls && controls.scopeID() === scope.id) controls.refresh()
   }
-  const reconcile = async (directory: string | undefined) => applyReconcile(routeScope(api, directory))
   const scheduleReconcile = (scope: ReturnType<typeof ledgerScope>) => {
     const timerKey = scope.id
     const existing = reconcileTimers.get(timerKey)
@@ -36,6 +39,10 @@ const tui: TuiPlugin = async (api, options) => {
       timerKey,
       setTimeout(() => {
         reconcileTimers.delete(timerKey)
+        if (controls) {
+          controls.reloadDiff(false)
+          return
+        }
         void applyReconcile(scope)
           .catch((error) => {
             if (!disposed && controls && controls.scopeID() === scope.id) controls.notice(errorMessage(error), "error")
@@ -52,7 +59,7 @@ const tui: TuiPlugin = async (api, options) => {
   api.route.register([
     {
       name: ROUTE,
-      render: ({ params }) => <LedgerScreen api={api} params={params} analysisModel={options?.model} registerControls={registerControls} reconcileWorkspace={reconcile} />,
+      render: ({ params }) => <LedgerScreen api={api} params={params} analysisModel={options?.model} registerControls={registerControls} />,
     },
   ])
 
@@ -108,7 +115,7 @@ const tui: TuiPlugin = async (api, options) => {
       session_prompt_right() {
         const scope = ledgerScope(api)
         const needs = readFilesForScope(scope).filter(fileNeedsApproval).length
-        return needs ? <text>ledger {needs}</text> : null
+        return needs ? <text>ledger local {needs}</text> : null
       },
     },
   })

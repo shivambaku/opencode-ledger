@@ -94,14 +94,16 @@ export type ParsedBlock = {
 }
 
 export type LedgerKey = { name?: string; sequence?: string; ctrl?: boolean; shift?: boolean; preventDefault?: () => void; stopPropagation?: () => void }
-export type LedgerAction = "down" | "up" | "nextFile" | "prevFile" | "diffLeft" | "diffRight" | "yank" | "yankComments" | "comment" | "approve" | "editor" | "inspect" | "explanation" | "layout" | "diffDown" | "diffUp" | "prevBlock" | "nextBlock" | "help" | "analyze" | "analyzeAll" | "commitMessage" | "stop" | "back" | "close"
+export type LedgerAction = "down" | "up" | "nextFile" | "prevFile" | "diffLeft" | "diffRight" | "yank" | "yankComments" | "comment" | "approve" | "editor" | "inspect" | "explanation" | "layout" | "diffDown" | "diffUp" | "prevBlock" | "nextBlock" | "help" | "analyze" | "analyzeAll" | "commitMessage" | "stop" | "back" | "close" | "toggleMode" | "reloadDiff"
 export type InspectFocus = "diff" | "explanation"
 export type InspectLayout = "side" | "bottom"
 export type VisibleDiffKind = "code" | "add" | "delete"
 export type VisibleDiffLine = { key: string; line: string; rowIndex: number; kind: VisibleDiffKind; blockID?: string; diffLineIndex?: number; fileLine?: number }
 export type NoticeTone = "muted" | "info" | "success" | "warning" | "error"
 export type LedgerNotice = { text: string; tone: NoticeTone }
-export type LedgerScope = { id: string; directory: string }
+export type DiffMode = "branch" | "worktree"
+export type BranchComparison = { name: string; baseRef: "main" | "origin/main"; head: string; base: string; mergeBase: string }
+export type LedgerScope = { id: string; directory: string; mode: DiffMode; comparison?: BranchComparison }
 
 export type LedgerControls = {
   scopeID(): string
@@ -126,6 +128,7 @@ export type LedgerControls = {
   stop(): void
   back(): void
   close(): void
+  reloadDiff(force?: boolean): void
   refresh(preserveID?: string): void
   notice(text: string, tone?: NoticeTone): void
   handleKey(key: LedgerKey): boolean

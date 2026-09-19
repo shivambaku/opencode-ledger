@@ -1,6 +1,6 @@
 {
   "name": "@shivambaku/opencode-ledger",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Experimental code review agent and TUI review ledger plugin for OpenCode.",
   "license": "MIT",
   "type": "module",
@@ -35,6 +35,7 @@
   ],
   "scripts": {
     "check": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
     "prepublishOnly": "npm run check"
   },
   "peerDependencies": {
@@ -65,6 +66,7 @@
     "@types/bun": "^1.3.3",
     "@types/node": "^24.10.1",
     "solid-js": "1.9.12",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.3"
   }
 }

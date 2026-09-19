@@ -1,5 +1,5 @@
 import { blockComment, blockReviewed, fileNeedsAnalysis, lineRangeText } from "./domain"
-import type { CommitMessageQuality, LedgerFile } from "./types"
+import type { CommitMessageQuality, LedgerFile, LedgerScope } from "./types"
 import { limitText } from "./utils"
 
 const MAX_COMMIT_DIFF_CHARS = 18000
@@ -50,13 +50,15 @@ function analysisSummary(file: LedgerFile) {
   return [`File: ${file.path}`, ...(impact ? [impact] : []), ...blocks].join("\n")
 }
 
-export function buildCommitMessagePrompt(files: LedgerFile[]): CommitMessagePrompt {
+export function buildCommitMessagePrompt(files: LedgerFile[], scope: LedgerScope): CommitMessagePrompt {
   const quality = commitQuality(files)
   const summaries = files.map(fileSummary).join("\n")
   const analysis = limitText(files.map(analysisSummary).filter(Boolean).join("\n\n"), 8000) || "(none available)"
   const maxFileDiff = Math.max(1200, Math.min(MAX_FILE_DIFF_CHARS, Math.floor(MAX_COMMIT_DIFF_CHARS / Math.max(1, files.length))))
   const diff = limitText(files.map((file) => `File: ${file.path}\n\`\`\`diff\n${limitText(file.patch, maxFileDiff)}\n\`\`\``).join("\n\n"), MAX_COMMIT_DIFF_CHARS)
   const prompt = `You are generating a Git commit message for the current Ledger changeset.
+
+${scope.mode === "branch" ? `This is a squash-commit message for committed branch changes against ${scope.comparison?.baseRef ?? "main"}, from the merge base to HEAD. Uncommitted changes are excluded.` : "This changeset contains uncommitted working-copy changes."}
 
 Generate the message for the entire changeset, not for one interesting file, helper, bug fix, or analysis note. First infer the dominant purpose that best explains the changed files together. Prefer a broad, accurate summary over a narrow implementation detail.
 

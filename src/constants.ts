@@ -75,6 +75,8 @@ export const ledgerActionConfigs = [
   { action: "analyze", command: "ledger.analyze", commandKey: "a", desc: "Analyze file", keys: ["a"] },
   { action: "analyzeAll", command: "ledger.analyzeAll", commandKey: "shift+a", desc: "Analyze pending files", keys: ["shift+a"], aliases: ["A"] },
   { action: "commitMessage", command: "ledger.commitMessage", commandKey: "m", desc: "Generate commit message", keys: ["m"] },
+  { action: "toggleMode", command: "ledger.toggleMode", commandKey: "b", desc: "Toggle branch/uncommitted changes", keys: ["b"] },
+  { action: "reloadDiff", command: "ledger.reloadDiff", commandKey: "r", desc: "Refresh Git diff", keys: ["r"] },
   { action: "stop", command: "ledger.stop", commandKey: "x", desc: "Stop analysis", keys: ["x"] },
   { action: "diffDown", command: "ledger.diffDown", commandKey: "ctrl+d", desc: "Scroll down", keys: ["ctrl+d"], aliases: ["\u0004"] },
   { action: "diffUp", command: "ledger.diffUp", commandKey: "ctrl+u", desc: "Scroll up", keys: ["ctrl+u"], aliases: ["\u0015"] },

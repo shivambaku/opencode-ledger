@@ -6,7 +6,7 @@ export type { RetrievedContext } from "./contextLookup"
 const contextCache = new Map<string, RetrievedContext>()
 
 function contextCacheKey(scope: LedgerScope, file: LedgerFile) {
-  return `${scope.directory}\0${file.path}\0${file.hash}`
+  return `${scope.id}\0${file.path}\0${file.hash}`
 }
 
 export async function retrieveReviewContext(scope: LedgerScope, file: LedgerFile): Promise<RetrievedContext> {

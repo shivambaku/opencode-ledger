@@ -7,10 +7,11 @@ import { abortSession, deleteSession, requestAnalysis, requestCommitMessage } fr
 import { blockContainsFileLine, blockForFileLine, blockHunkStart, buildDisplayRows, diffLineForFileLine } from "../display"
 import { blockApproved, blockComment, blockLabel, blockReviewed, blockStale, codeFiletype, fileApproved, fileImpact, fileNeedsAnalysis, fileNeedsApproval, fileRow, fileStatusMark, lineRangeText, unresolvedCommentCount } from "../domain"
 import { openEditor } from "../editor"
+import { reconcileWorkspaceDiff, resolveBranchScope } from "../git"
 import { ledgerAction } from "../keys"
 import { closeLedger, writeClipboard, yankBlockToClipboard, yankUnresolvedCommentsToClipboard } from "../runtime"
 import { currentFile, ledgerFiles, ledgerStateVersion, routeScope, setBlockComment, setBlockResolved, setFileAnalysisResult, setFileResolved } from "../storage"
-import type { InspectFocus, InspectLayout, LedgerAction, LedgerBlock, LedgerControls, LedgerFile, LedgerNotice, LedgerScope, NoticeTone, VisibleDiffLine } from "../types"
+import type { DiffMode, InspectFocus, InspectLayout, LedgerAction, LedgerBlock, LedgerControls, LedgerFile, LedgerNotice, LedgerScope, NoticeTone, VisibleDiffLine } from "../types"
 import { clip, errorMessage, fileLines, filename, parseRouteParams, splitWidths, wrapText } from "../utils"
 import { DiffLine } from "./DiffLine"
 import { createCodeSyntax, selectedForeground } from "./styles"
@@ -115,7 +116,7 @@ const helpRows: HelpRow[] = [
   { section: "Diff View", keys: "c", desc: "Add or edit active block comment" },
   { section: "Diff View", keys: "y", desc: "Yank active block" },
   { section: "Diff View", keys: "Y", desc: "Yank unresolved comments" },
-  { section: "Diff View", keys: "e", desc: "Open editor at active block" },
+  { section: "Diff View", keys: "e", desc: "Open working-copy file in editor" },
   { section: "Diff View", keys: "esc", desc: "Return to file view" },
   { section: "Explanation", keys: "j / k", desc: "Scroll explanation" },
   { section: "Explanation", keys: "ctrl+d / ctrl+u", desc: "Page explanation" },
@@ -124,11 +125,13 @@ const helpRows: HelpRow[] = [
   { section: "Explanation", keys: "esc", desc: "Return focus to diff" },
   { section: "General", keys: "] / [", desc: "Next or previous file" },
   { section: "General", keys: "m", desc: "Generate commit message" },
+  { section: "General", keys: "b", desc: "Toggle branch/uncommitted changes" },
+  { section: "General", keys: "r", desc: "Refresh Git diff" },
   { section: "General", keys: "?", desc: "Toggle help" },
   { section: "General", keys: "q", desc: "Close ledger" },
 ]
 
-export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string, unknown>; analysisModel?: unknown; registerControls(controls?: LedgerControls): void; reconcileWorkspace(directory: string | undefined): Promise<void> }) {
+export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string, unknown>; analysisModel?: unknown; registerControls(controls?: LedgerControls): void }) {
   let root: BoxRenderable | undefined
   const dim = useTerminalDimensions()
   const route = parseRouteParams(props.params)
@@ -155,11 +158,15 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   const [analyzingFrame, setAnalyzingFrame] = createSignal(0)
   const [notice, setNotice] = createSignal<LedgerNotice | undefined>()
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
-  const scope = createMemo(() => routeScope(props.api, route.directory))
+  const [mode, setMode] = createSignal<DiffMode>("branch")
+  const [scope, setScope] = createSignal(routeScope(props.api, route.directory, "branch"))
+  const [diffReady, setDiffReady] = createSignal(false)
+  const [diffError, setDiffError] = createSignal<string | undefined>()
+  const [refreshingDiff, setRefreshingDiff] = createSignal(false)
   const scopeID = () => scope().id
   const files = createMemo(() => {
     revision()
-    return ledgerFiles(scope())
+    return diffReady() && !diffError() ? ledgerFiles(scope()) : []
   })
   const approvedBlocks = createMemo(() => files().reduce((sum, file) => sum + file.blocks.filter(blockApproved).length, 0))
   const totalBlocks = createMemo(() => files().reduce((sum, file) => sum + file.blocks.length, 0))
@@ -218,7 +225,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
   const contentWidth = () => Math.max(1, dim().width - 4)
   const commentCountText = () => (commentCount() ? ` · ${commentCount()} ${commentCount() === 1 ? "comment" : "comments"}` : "")
-  const headerTitle = () => `Ledger ${approvedBlocks()}/${totalBlocks()} approved${commentCountText()}`
+  const sourceLabel = () => mode() === "branch" ? `${scope().comparison?.name ?? "Branch"} vs ${scope().comparison?.baseRef ?? "main"}` : "Uncommitted"
+  const headerTitle = () => `Ledger | ${sourceLabel()} | ${approvedBlocks()}/${totalBlocks()} approved${commentCountText()}`
   const headerWidth = () => Math.max(1, contentWidth() - 2)
   const headerHelpText = () => notice()?.text ?? helpText()
   const headerHelpWidth = () => Math.max(1, headerWidth() - headerTitle().length - 2)
@@ -233,8 +241,12 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   const helpTop = () => Math.max(1, Math.floor((dim().height - helpHeight()) / 2))
 
   let analysisToken = 0
+  let commitRequestToken = 0
+  let refreshToken = 0
+  let refreshPending = false
   let disposed = false
   let statePollTimer: ReturnType<typeof setInterval> | undefined
+  let gitPollTimer: ReturnType<typeof setInterval> | undefined
   let analyzingFrameTimer: ReturnType<typeof setInterval> | undefined
   let lastStateVersion = 0
   let completedFileForBack: { index: number; fileID: string } | undefined
@@ -327,7 +339,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
 
   function helpText() {
-    return "? help"
+    return "b mode  r refresh  ? help"
   }
 
   function keepHelpRowVisible(nextIndex = helpCursor()) {
@@ -567,6 +579,92 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     } else keepSelectedVisible()
   }
 
+  function cancelAnalysis(preserveCommitRequest = false) {
+    analysisToken++
+    setAnalyzingIDs(new Set<string>())
+    if (!preserveCommitRequest) {
+      commitRequestToken++
+      setGeneratingCommitMessage(false)
+    }
+    void abortActiveAnalysisSessions()
+  }
+
+  createEffect(() => {
+    if (!commentEditor() && refreshPending) {
+      refreshPending = false
+      void reloadDiff()
+    }
+  })
+
+  async function reloadDiff(force = true, preparingCommit?: number) {
+    if (disposed) return false
+    if (commentEditor() || (!force && refreshingDiff())) {
+      refreshPending = true
+      return false
+    }
+    const token = ++refreshToken
+    const source = mode()
+    const active = () => {
+      if (commentEditor()) refreshPending = true
+      return !disposed && token === refreshToken && source === mode() && !commentEditor()
+    }
+    const preserveID = selected()?.id
+    setRefreshingDiff(true)
+    try {
+      const next = source === "branch" ? await resolveBranchScope(scope().directory) : routeScope(props.api, route.directory)
+      if (!active()) return false
+      const changedScope = next.id !== scope().id
+      const changedSnapshot = changedScope || JSON.stringify(next.comparison) !== JSON.stringify(scope().comparison)
+      if (source === "branch" && !force && !changedSnapshot && diffReady() && !diffError()) return true
+      if (changedSnapshot) {
+        cancelAnalysis(preparingCommit !== undefined && preparingCommit === commitRequestToken)
+        setDiffReady(false)
+      }
+      const applied = await reconcileWorkspaceDiff(props.api, next, active)
+      if (!applied || !active()) return false
+      setScope(next)
+      setDiffError(undefined)
+      setDiffReady(true)
+      if (changedScope) {
+        setCursor(0)
+        setScroll(0)
+        setInspect(false)
+        setExplanationVisible(false)
+        completedFileForBack = undefined
+      }
+      refresh(changedScope ? undefined : preserveID)
+      if (changedSnapshot) focusDiffLine(selected())
+      lastStateVersion = ledgerStateVersion(next)
+      return true
+    } catch (error) {
+      if (active()) {
+        cancelAnalysis()
+        setDiffError(errorMessage(error))
+        setDiffReady(false)
+      }
+      return false
+    } finally {
+      if (!disposed && token === refreshToken) setRefreshingDiff(false)
+    }
+  }
+
+  function toggleMode() {
+    cancelAnalysis()
+    setCommentEditor(undefined)
+    setMode((current) => current === "branch" ? "worktree" : "branch")
+    setScope(routeScope(props.api, route.directory, mode()))
+    setDiffReady(false)
+    setDiffError(undefined)
+    setNotice(undefined)
+    setCursor(0)
+    setScroll(0)
+    setInspect(false)
+    setInspectFocus("diff")
+    setExplanationVisible(false)
+    completedFileForBack = undefined
+    void reloadDiff()
+  }
+
   function withActiveBlock(action: (file: LedgerFile, block: LedgerBlock) => void) {
     const file = selected()
     const block = activeBlock()
@@ -594,7 +692,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     setAnalyzing(fileID, true)
     let sessionID: string | undefined
     try {
-      const result = await requestAnalysis(props.api, fileScope, file, () => token === analysisToken, props.analysisModel, (id) => {
+      const result = await requestAnalysis(props.api, fileScope, file, () => analysisActive(token), props.analysisModel, (id) => {
         sessionID = id
         activeAnalysisSessions.set(id, fileScope)
       })
@@ -623,7 +721,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
 
   async function analyzeAll(token: number) {
-    if (!analysisActive(token)) return
+    if (!analysisActive(token) || !diffReady() || diffError()) return
     const targets = ledgerFiles(scope()).filter((file) => fileNeedsApproval(file) && fileNeedsAnalysis(file) && !isAnalyzing(file.id)).map((file) => file.id)
     if (!targets.length) {
       showLedgerNotice("Everything needing approval is analyzed.")
@@ -647,27 +745,30 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       return
     }
 
-    const fileScope = scope()
+    let fileScope = scope()
+    const request = ++commitRequestToken
+    const requestActive = () => !disposed && request === commitRequestToken
     setGeneratingCommitMessage(true)
     showLedgerNotice("Generating commit message...")
     let sessionID: string | undefined
     try {
-      await props.reconcileWorkspace(route.directory)
-      if (!analysisActive(token)) return
+      if (!await reloadDiff(true, request)) return
+      if (!requestActive()) return
+      fileScope = scope()
       refresh()
-      const result = await requestCommitMessage(props.api, fileScope, ledgerFiles(fileScope), () => token === analysisToken, props.analysisModel, (id) => {
+      const result = await requestCommitMessage(props.api, fileScope, ledgerFiles(fileScope), requestActive, props.analysisModel, (id) => {
         sessionID = id
         activeAnalysisSessions.set(id, fileScope)
       })
-      if (!analysisActive(token)) return
+      if (!requestActive()) return
       const ok = await writeClipboard(props.api, result.text)
       const context = commitMessageContextText(result)
       showLedgerNotice(ok ? `Yanked commit message (${context}).` : `Generated commit message (${context}), but clipboard unavailable.`, ok ? "success" : "warning")
     } catch (error) {
-      if (analysisActive(token)) showLedgerNotice(errorMessage(error), "error")
+      if (requestActive()) showLedgerNotice(errorMessage(error), "error")
     } finally {
       if (sessionID) await deleteAnalysisSession(sessionID, fileScope)
-      if (analysisActive(token)) setGeneratingCommitMessage(false)
+      if (requestActive()) setGeneratingCommitMessage(false)
     }
   }
 
@@ -679,11 +780,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     deferredTimers.add(timer)
   }
 
-  async function stopAnalysis() {
-    analysisToken++
-    setAnalyzingIDs(new Set<string>())
-    setGeneratingCommitMessage(false)
-    await abortActiveAnalysisSessions()
+  function stopAnalysis() {
+    cancelAnalysis()
     showLedgerNotice("Analysis stopped.")
   }
 
@@ -715,7 +813,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
               return <DiffLine line={line.line} width={innerWidth} scrollX={horizontalScroll()} kind={line.kind} active={active()} blockActive={inspect() && rowHasActiveGutter(line)} explanationActive={explanationRegion()} blockResolved={!!activeBlock()?.resolved} path={file.path} filetype={selectedFiletype()} syntaxStyle={syntaxStyle()} theme={theme} />
             }}</For>
           </box>
-        ) : <text fg={theme.textMuted}>No uncommitted Git changes. Make changes, then open Ledger again.</text>}
+        ) : <text fg={diffError() ? theme.error : theme.textMuted}>{diffError() ? `${diffError()} Press r to retry or b to switch views.` : refreshingDiff() ? "Loading Git changes..." : mode() === "branch" ? `No committed branch changes against ${scope().comparison?.baseRef ?? "main"}. Press b for uncommitted changes.` : "No uncommitted Git changes. Press b for branch changes."}</text>}
       </box>
     )
   }
@@ -790,6 +888,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       analyze: controls.analyze,
       analyzeAll: controls.analyzeAll,
       commitMessage: controls.commitMessage,
+      toggleMode,
+      reloadDiff: controls.reloadDiff,
       stop: controls.stop,
       back: controls.back,
       close: controls.close,
@@ -884,6 +984,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     },
     editor() {
       withActiveBlock((file, block) => {
+        if (mode() === "branch") showLedgerNotice("Opening the working copy; its line numbers may differ from HEAD.", "warning")
         void openEditor(props.api, scope(), file, block).then((result) => showLedgerNotice(result.text, result.tone))
       })
     },
@@ -932,6 +1033,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       deferAnalysis(() => void analyzeAll(token))
     },
     commitMessage() {
+      if (!diffReady() || diffError()) return
       const token = analysisToken
       deferAnalysis(() => void generateCommitMessage(token))
     },
@@ -964,6 +1066,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       closeLedger(props.api)
     },
     refresh,
+    reloadDiff: (force = true) => { void reloadDiff(force) },
     notice: showLedgerNotice,
     handleKey(key) {
       if (props.api.ui.dialog.open) return false
@@ -1003,15 +1106,22 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   onMount(() => {
     lastStateVersion = ledgerStateVersion(scope())
     statePollTimer = setInterval(() => {
+      if (refreshPending && !refreshingDiff() && !commentEditor()) {
+        refreshPending = false
+        void reloadDiff(false)
+      }
       const nextVersion = ledgerStateVersion(scope())
       if (nextVersion !== lastStateVersion) {
         lastStateVersion = nextVersion
         refresh()
       }
     }, 1000)
+    gitPollTimer = setInterval(() => {
+      if (mode() === "branch" && !refreshingDiff()) void reloadDiff(false)
+    }, 2000)
     focusDiffLine(selected())
     props.registerControls(controls)
-    void props.reconcileWorkspace(route.directory).then(() => refresh()).catch((error) => showLedgerNotice(errorMessage(error), "error"))
+    void reloadDiff()
     setTimeout(() => root?.focus(), 0)
   })
 
@@ -1021,6 +1131,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     for (const timer of deferredTimers) clearTimeout(timer)
     deferredTimers.clear()
     if (statePollTimer) clearInterval(statePollTimer)
+    if (gitPollTimer) clearInterval(gitPollTimer)
     if (analyzingFrameTimer) clearInterval(analyzingFrameTimer)
     if (noticeTimer) clearTimeout(noticeTimer)
     void abortActiveAnalysisSessions()
@@ -1048,8 +1159,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       backgroundColor={theme.background}
     >
       <box width={headerWidth()} height={1} marginLeft={1} marginRight={1} flexDirection="row" alignItems="flex-start" justifyContent="space-between" paddingBottom={0}>
-        <box height={1} flexDirection="row">
-          <text fg={theme.text}><b>Ledger</b> <span style={{ fg: theme.textMuted }}>{approvedBlocks()}/{totalBlocks()} approved{commentCountText()}</span></text>
+        <box height={1} width={Math.min(headerTitle().length, Math.max(1, headerWidth() - 8))} flexDirection="row" overflow="hidden">
+          <text fg={theme.text} truncate wrapMode="none"><b>Ledger</b> <span style={{ fg: theme.textMuted }}>| {sourceLabel()} | {approvedBlocks()}/{totalBlocks()} approved{commentCountText()}</span></text>
         </box>
         <box height={1} width={headerHelpWidth()} flexDirection="row" alignItems="flex-start" justifyContent="flex-end" overflow="hidden">
           <text width={headerHelpTextWidth()} fg={notice() ? toneColor(notice()!.tone) : theme.textMuted} truncate wrapMode="none">{headerHelpText()}</text>

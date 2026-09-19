@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writ
 import { dirname, join } from "node:path"
 import { impactRank } from "./constants"
 import { fileApproved, fileImpact } from "./domain"
-import type { BlockExplanation, BlockReview, FileAnalysis, LedgerBlock, LedgerFile, LedgerScope } from "./types"
+import type { BlockExplanation, BlockReview, BranchComparison, DiffMode, FileAnalysis, LedgerBlock, LedgerFile, LedgerScope } from "./types"
 import { hashString, isImpact, isRecord, normalizePath } from "./utils"
 
 type LedgerState = { scopes: Record<string, LedgerFile[]> }
@@ -20,9 +20,11 @@ export function ledgerScope(api: TuiPluginApi): LedgerScope {
   return ledgerScopeForDirectory(api.state.path.worktree || api.state.path.directory)
 }
 
-function ledgerScopeForDirectory(directory: string | undefined): LedgerScope {
+export function ledgerScopeForDirectory(directory: string | undefined, mode: DiffMode = "worktree", comparison?: BranchComparison): LedgerScope {
   const resolved = directory || "unknown"
-  return { id: ledgerScopeIDForDirectory(resolved), directory: resolved }
+  // Keep the shipped worktree key so existing reviews remain available.
+  const id = mode === "worktree" ? ledgerScopeIDForDirectory(resolved) : hashString(JSON.stringify([normalizePath(resolved), mode, comparison?.name, comparison?.baseRef]))
+  return { id, directory: resolved, mode, comparison }
 }
 
 function statePath(scope: LedgerScope) {
@@ -197,8 +199,8 @@ function orderedFiles(files: LedgerFile[]) {
   })
 }
 
-export function routeScope(api: TuiPluginApi, directory: string | undefined) {
-  return directory ? ledgerScopeForDirectory(directory) : ledgerScope(api)
+export function routeScope(api: TuiPluginApi, directory: string | undefined, mode: DiffMode = "worktree") {
+  return ledgerScopeForDirectory(directory || api.state.path.worktree || api.state.path.directory, mode)
 }
 
 export function ledgerFiles(scope: LedgerScope) {
