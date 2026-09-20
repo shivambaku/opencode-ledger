@@ -1,17 +1,20 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { execFile } from "node:child_process"
-import { ledgerScopeForDirectory, readFilesForScope, writeFilesForScope } from "./storage"
+import { copyFile, lstat, mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { ensureLedgerIgnored, ledgerScopeForDirectory, readFilesForScope, writeFilesForScope } from "./storage"
 import type { BranchComparison, FileDiff, FileStatus, LedgerBlock, LedgerFile, LedgerScope, ParsedBlock } from "./types"
 import { isRecord, normalizePath, patchHash, readWorkspaceFile, unifiedDiff } from "./utils"
 
-function runGit(directory: string, args: string[], input?: string): Promise<Buffer> {
+function runGit(directory: string, args: string[], input?: string, env?: NodeJS.ProcessEnv): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = execFile("git", ["--no-pager", "--no-replace-objects", "-c", "core.quotePath=true", "-c", "diff.renames=true", ...args], {
       cwd: directory,
       encoding: "buffer",
       timeout: 30_000,
       maxBuffer: 128 * 1024 * 1024,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "", GIT_OPTIONAL_LOCKS: "0", GIT_DIFF_OPTS: "" },
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "", GIT_OPTIONAL_LOCKS: "0", GIT_DIFF_OPTS: "", ...env },
     }, (error, stdout) => error ? reject(error) : resolve(stdout))
     child.stdin?.on("error", reject)
     child.stdin?.end(input)
@@ -70,15 +73,51 @@ export async function resolveBranchScope(directory: string): Promise<LedgerScope
 async function branchDiffs(scope: LedgerScope): Promise<FileDiff[]> {
   if (!scope.comparison) throw new Error("The branch comparison is missing. Refresh Ledger to resolve it again.")
   const { mergeBase, head } = scope.comparison
-  // Even diff attributes must come from the snapshot, not a dirty checkout.
+  ensureLedgerIgnored(scope)
+  const temporary = await mkdtemp(join(tmpdir(), "ledger-index-"))
+  let tree: string
+  try {
+    const index = join(temporary, "index")
+    const env = { GIT_INDEX_FILE: index }
+    const source = (await runGit(scope.directory, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).toString("utf8").replace(/\r?\n$/, "")
+    try {
+      await copyFile(source, index)
+    } catch (error) {
+      if (!isRecord(error) || error.code !== "ENOENT") throw error
+      await runGit(scope.directory, ["read-tree", head], undefined, env)
+    }
+    const flags = (await runGit(scope.directory, ["ls-files", "-v", "-z"], undefined, env)).toString("utf8").split("\0").filter(Boolean)
+    const assumed = flags.filter((entry) => /^[a-z]/.test(entry)).map((entry) => entry.slice(2))
+    if (assumed.length) await runGit(scope.directory, ["update-index", "--no-assume-unchanged", "-z", "--stdin"], `${assumed.join("\0")}\0`, env)
+    const materialized: string[] = []
+    for (const entry of flags.filter((entry) => /^[Ss] /.test(entry))) {
+      const path = entry.slice(2)
+      try {
+        await lstat(join(scope.directory, path))
+        materialized.push(path)
+      } catch (error) {
+        if (!isRecord(error) || error.code !== "ENOENT") throw error
+      }
+    }
+    // Reread materialized skip-worktree files without treating absent sparse
+    // checkout entries as deletions. All flag changes stay in the private index.
+    if (materialized.length) await runGit(scope.directory, ["update-index", "--no-skip-worktree", "-z", "--stdin"], `${materialized.join("\0")}\0`, env)
+    // Stage only into a private index: capture the net working state, including
+    // untracked files, while preserving the user's real staging area.
+    await runGit(scope.directory, ["-c", "core.splitIndex=false", "-c", "core.fsmonitor=false", "add", "--all", "--sparse", "--", "."], undefined, env)
+    tree = (await runGit(scope.directory, ["write-tree"], undefined, env)).toString("utf8").trim()
+  } finally {
+    await rm(temporary, { recursive: true, force: true })
+  }
+  // Read both diff attributes and file context from the captured working state.
   const raw = (await runGit(scope.directory, [
-    `--attr-source=${head}`, "diff", "--raw", "--patch", "-z", "--no-abbrev", "--full-index",
+    `--attr-source=${tree}`, "diff", "--raw", "--patch", "-z", "--no-abbrev", "--full-index",
     "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative",
     "--src-prefix=a/", "--dst-prefix=b/", "--line-prefix=",
     "--output-indicator-new=+", "--output-indicator-old=-", "--output-indicator-context= ",
     "--find-renames=50%", "--diff-algorithm=myers", "--no-indent-heuristic",
     "--unified=3", "--inter-hunk-context=0", "--ignore-submodules=none", "--submodule=short",
-    mergeBase, head, "--",
+    mergeBase, tree, "--",
   ])).toString("utf8")
   if (!raw) return []
 
@@ -111,10 +150,10 @@ async function branchDiffs(scope: LedgerScope): Promise<FileDiff[]> {
     for (const object of objectIDs) {
       const end = batch.indexOf(10, offset)
       const header = batch.subarray(offset, end).toString("ascii").match(/^([a-f0-9]+) blob (\d+)$/)
-      if (end < 0 || !header || header[1] !== object) throw new Error(`Cannot read committed Git content for ${object}. Ensure the branch objects are available locally.`)
+      if (end < 0 || !header || header[1] !== object) throw new Error(`Cannot read Git snapshot content for ${object}. Ensure the snapshot objects are available locally.`)
       const size = Number(header[2])
       offset = end + 1
-      if (!Number.isSafeInteger(size) || offset + size >= batch.length || batch[offset + size] !== 10) throw new Error("Git returned incomplete committed file content.")
+      if (!Number.isSafeInteger(size) || offset + size >= batch.length || batch[offset + size] !== 10) throw new Error("Git returned incomplete snapshot file content.")
       const content = batch.subarray(offset, offset + size)
       contents.set(object, content.includes(0) ? "" : content.toString("utf8"))
       offset += size + 1
@@ -379,12 +418,17 @@ async function replaceWorkspaceDiffs(scope: LedgerScope, diffs: unknown[]) {
     }
   }
 
-  writeFilesForScope(scope, [...filesByID.values()].filter((file) => currentIDs.has(file.id)))
+  const files = [...filesByID.values()].filter((file) => currentIDs.has(file.id))
+  if (JSON.stringify(files) !== JSON.stringify(previous)) writeFilesForScope(scope, files)
 }
 
 export async function reconcileWorkspaceDiff(api: TuiPluginApi, scope: LedgerScope, shouldApply?: () => boolean) {
   if (scope.mode === "branch") {
     const diffs = await branchDiffs(scope)
+    const current = await resolveBranchScope(scope.directory)
+    if (current.id !== scope.id || JSON.stringify(current.comparison) !== JSON.stringify(scope.comparison)) {
+      throw new Error("The branch or comparison base changed while capturing local changes. Refresh Ledger to try again.")
+    }
     if (shouldApply && !shouldApply()) return false
     await replaceWorkspaceDiffs(scope, diffs)
     return true

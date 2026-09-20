@@ -58,11 +58,11 @@ export function buildCommitMessagePrompt(files: LedgerFile[], scope: LedgerScope
   const diff = limitText(files.map((file) => `File: ${file.path}\n\`\`\`diff\n${limitText(file.patch, maxFileDiff)}\n\`\`\``).join("\n\n"), MAX_COMMIT_DIFF_CHARS)
   const prompt = `You are generating a Git commit message for the current Ledger changeset.
 
-${scope.mode === "branch" ? `This is a squash-commit message for committed branch changes against ${scope.comparison?.baseRef ?? "main"}, from the merge base to HEAD. Uncommitted changes are excluded.` : "This changeset contains uncommitted working-copy changes."}
+${scope.mode === "branch" ? `This is a squash-commit message for the combined net branch and local changes against ${scope.comparison?.baseRef ?? "main"}, from the merge base to the supplied working-state snapshot. Include committed branch changes plus staged, unstaged, and non-ignored untracked changes represented in the snapshot. Changes that cancel out are absent. The diff and file contents come from the same temporary-index tree snapshot.` : "This changeset contains uncommitted working-copy changes only."}
 
 Generate the message for the entire changeset, not for one interesting file, helper, bug fix, or analysis note. First infer the dominant purpose that best explains the changed files together. Prefer a broad, accurate summary over a narrow implementation detail.
 
-Use the current diff as the source of truth. Existing Ledger analysis and reviewer comments are secondary context: they may explain intent, but may be partial, stale, or focused on only one file. Do not mention Ledger, analysis coverage, hunks, JSON, or internal IDs in the commit message.
+Use the supplied changeset snapshot and diff as the authoritative source of truth, not independently read working-copy files or a committed-only diff. Existing Ledger analysis and reviewer comments are secondary context: they may explain intent, but may be partial, stale, or focused on only one file. Do not mention Ledger, analysis coverage, hunks, JSON, or internal IDs in the commit message.
 
 Return only JSON matching the requested schema.
 
@@ -72,7 +72,7 @@ ${changesetSummary(files)}
 Changed files:
 ${summaries}
 
-Current Git diff excerpts by file:
+Supplied Git diff excerpts by file:
 ${diff}
 
 Available Ledger context, if useful:

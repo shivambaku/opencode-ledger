@@ -67,7 +67,7 @@ export async function buildReviewPrompt(scope: LedgerScope, file: LedgerFile): P
 
   const { rendered: _rendered, ...debugContext } = context
   const source = scope.mode === "branch"
-    ? `Review source: committed branch changes against ${scope.comparison?.baseRef ?? "main"}, from merge base ${scope.comparison?.mergeBase} to commit ${scope.comparison?.head}. Uncommitted working-copy contents are not part of this review. Use the supplied diff rather than working-copy files.\n\n`
-    : "Review source: uncommitted working-copy changes.\n\n"
+    ? `Review source: combined net branch and local changes against ${scope.comparison?.baseRef ?? "main"}, from merge base ${scope.comparison?.mergeBase} to the supplied working-state snapshot. This includes committed branch changes plus staged, unstaged, and non-ignored untracked changes; changes that cancel out are absent. The supplied diff and file contents come from the same temporary-index tree snapshot and are authoritative. Do not substitute independently read working-copy files or a committed-only diff.\n\n`
+    : "Review source: uncommitted working-copy changes only. The supplied changeset is authoritative; do not substitute independently read working-copy files.\n\n"
   return { prompt: source + prompt, context: debugContext, hunks: hunkSummaries }
 }

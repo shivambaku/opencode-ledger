@@ -2,7 +2,7 @@ import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { existsSync } from "node:fs"
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { test, type TestContext } from "node:test"
@@ -57,7 +57,7 @@ async function repository(t: TestContext, files: Record<string, string | Uint8Ar
   return directory
 }
 
-test("branch diffs exclude main-only commits and every kind of dirty worktree change", async (t) => {
+test("branch diffs exclude main-only commits and include net staged, unstaged, and untracked changes", async (t) => {
   const directory = await repository(t, {
     "shared.txt": "base\n",
     "local-delete.txt": "old local-delete\n",
@@ -84,6 +84,9 @@ test("branch diffs exclude main-only commits and every kind of dirty worktree ch
   await put(directory, "untracked.txt", "untracked addition\n")
   await put(directory, "removed.txt", "locally resurrected deletion\n")
   await rm(join(directory, "local-delete.txt"))
+  const indexPath = await git(directory, "rev-parse", "--path-format=absolute", "--git-path", "index")
+  const indexBefore = await readFile(indexPath)
+  const stagedBefore = await git(directory, "diff", "--cached", "--binary")
 
   const scope = await resolveBranchScope(join(directory, "nested"))
   assert.equal(scope.directory, directory)
@@ -91,17 +94,26 @@ test("branch diffs exclude main-only commits and every kind of dirty worktree ch
   assert.deepEqual(scope.comparison, { name: "feature", baseRef: "main", head, base, mergeBase })
   assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
   const files = new Map(readFilesForScope(scope).map((file) => [file.path, file]))
-  assert.deepEqual([...files.keys()].sort(), ["local-delete.txt", "nested/added.txt", "removed.txt", "shared.txt"])
-  assert.equal(files.get("shared.txt")?.content, "committed feature\n")
-  assert.match(files.get("shared.txt")!.patch, /-base\n\+committed feature/)
-  assert.doesNotMatch(files.get("shared.txt")!.patch, /main-only|staged|unstaged/)
-  assert.equal(files.get("local-delete.txt")?.content, "committed but deleted locally\n")
+  assert.deepEqual([...files.keys()].sort(), ["local-delete.txt", "nested/added.txt", "removed.txt", "shared.txt", "staged-only.txt", "untracked.txt"])
+  assert.equal(files.get("shared.txt")?.content, "unstaged feature edit\n")
+  assert.match(files.get("shared.txt")!.patch, /-base\n\+unstaged feature edit/)
+  assert.doesNotMatch(files.get("shared.txt")!.patch, /main-only|\+staged feature|committed feature/)
+  assert.equal(files.get("local-delete.txt")?.status, "deleted")
+  assert.equal(files.get("local-delete.txt")?.content, "")
+  assert.match(files.get("local-delete.txt")!.patch, /-old local-delete/)
   assert.equal(files.get("nested/added.txt")?.content, "committed addition\n")
   assert.equal(files.get("nested/added.txt")?.status, "added")
-  assert.equal(files.get("removed.txt")?.status, "deleted")
-  assert.equal(files.get("removed.txt")?.content, "")
+  assert.equal(files.get("removed.txt")?.status, "modified")
+  assert.equal(files.get("removed.txt")?.content, "locally resurrected deletion\n")
+  assert.match(files.get("removed.txt")!.patch, /-remove this\n\+locally resurrected deletion/)
+  assert.equal(files.get("staged-only.txt")?.content, "staged-only edit\n")
+  assert.equal(files.get("staged-only.txt")?.status, "modified")
+  assert.equal(files.get("untracked.txt")?.content, "untracked addition\n")
+  assert.equal(files.get("untracked.txt")?.status, "added")
   assert.equal(files.get("shared.txt")?.additions, 1)
   assert.equal(files.get("shared.txt")?.deletions, 1)
+  assert.deepEqual(await readFile(indexPath), indexBefore)
+  assert.equal(await git(directory, "diff", "--cached", "--binary"), stagedBefore)
 })
 
 test("an empty branch comparison clears old files without SDK fallback", async (t) => {
@@ -118,14 +130,77 @@ test("an empty branch comparison clears old files without SDK fallback", async (
   assert.equal(deleted.content, "")
 
   await git(directory, "revert", "--no-edit", "HEAD")
-  await put(directory, "shared.txt", "staged but not committed\n")
-  await git(directory, "add", "shared.txt")
-  await put(directory, "untracked.txt", "untracked\n")
+  assert.equal(await git(directory, "status", "--porcelain"), "")
   const scope = await resolveBranchScope(directory)
   assert.equal(scope.id, previous.id)
   assert.notEqual(scope.comparison?.head, previous.comparison?.head)
   assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
   assert.deepEqual(readFilesForScope(scope), [])
+})
+
+test("local edits can cancel committed changes and staged changes without moving refs", async (t) => {
+  const directory = await repository(t, { "shared.txt": "base\n", "removed.txt": "restore me\n" })
+  await git(directory, "checkout", "-b", "feature")
+  await put(directory, "shared.txt", "committed feature\n")
+  await put(directory, "added.txt", "committed addition\n")
+  await rm(join(directory, "removed.txt"))
+  await commit(directory)
+  const scope = await resolveBranchScope(directory)
+  await reconcileWorkspaceDiff(noSDK, scope)
+  assert.equal(readFilesForScope(scope).length, 3)
+
+  await put(directory, "shared.txt", "staged feature\n")
+  await put(directory, "staged-addition.txt", "staged addition\n")
+  await git(directory, "add", "--all")
+  await put(directory, "shared.txt", "base\n")
+  await put(directory, "removed.txt", "restore me\n")
+  await rm(join(directory, "added.txt"))
+  await rm(join(directory, "staged-addition.txt"))
+  const indexBefore = await readFile(join(directory, ".git/index"))
+
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  assert.deepEqual(readFilesForScope(scope), [])
+  assert.deepEqual(await resolveBranchScope(directory), scope)
+  assert.deepEqual(await readFile(join(directory, ".git/index")), indexBefore)
+  assert.notEqual(await git(directory, "diff", "--cached"), "")
+  assert.notEqual(await git(directory, "diff"), "")
+})
+
+test("dirty main refreshes the same scope without moving refs and avoids no-op state writes", async (t) => {
+  const directory = await repository(t, { "shared.txt": "before\nbase\nafter\n" })
+  const scope = await resolveBranchScope(directory)
+  assert.equal(scope.comparison?.name, "main")
+  assert.equal(scope.comparison?.head, scope.comparison?.mergeBase)
+  await put(directory, "shared.txt", "before\nstaged\nafter\n")
+  await git(directory, "add", "shared.txt")
+  await put(directory, "shared.txt", "before\nfirst local\nafter\n")
+  const indexBefore = await readFile(join(directory, ".git/index"))
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  const first = readFilesForScope(scope)
+  assert.equal(first.length, 1)
+  assert.equal(first[0].content, "before\nfirst local\nafter\n")
+  assert.match(first[0].patch, / before\n-base\n\+first local\n after/)
+
+  const statePath = join(directory, ".opencode/ledger/state.json")
+  const stateBefore = await readFile(statePath)
+  const oldTime = new Date("2000-01-01T00:00:00Z")
+  await utimes(statePath, oldTime, oldTime)
+  const mtimeBefore = (await stat(statePath, { bigint: true })).mtimeNs
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  assert.deepEqual(await readFile(statePath), stateBefore)
+  assert.equal((await stat(statePath, { bigint: true })).mtimeNs, mtimeBefore)
+
+  await put(directory, "shared.txt", "before\nsecond local\nafter\n")
+  await put(directory, "new.txt", "new untracked\n")
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  const second = new Map(readFilesForScope(scope).map((file) => [file.path, file]))
+  assert.deepEqual([...second.keys()].sort(), ["new.txt", "shared.txt"])
+  assert.equal(second.get("shared.txt")?.content, "before\nsecond local\nafter\n")
+  assert.match(second.get("shared.txt")!.patch, / before\n-base\n\+second local\n after/)
+  assert.notEqual(second.get("shared.txt")?.hash, first[0].hash)
+  assert.equal(second.get("new.txt")?.content, "new untracked\n")
+  assert.deepEqual(await resolveBranchScope(directory), scope)
+  assert.deepEqual(await readFile(join(directory, ".git/index")), indexBefore)
 })
 
 test("base resolution ignores tags, falls back to origin/main, and prefers local main", async (t) => {
@@ -168,30 +243,46 @@ test("resolution reports actionable non-repository, unborn HEAD, and unrelated-h
   await assert.rejects(resolveBranchScope(directory), /no common ancestor.*shares history/)
 })
 
-test("a resolved snapshot stays exact after HEAD, main, and the checked-out branch change", async (t) => {
-  const directory = await repository(t, { "shared.txt": "base\n", ".gitattributes": "*.txt diff\n" })
-  await git(directory, "checkout", "-b", "feature")
-  await put(directory, "shared.txt", "snapshot content\n")
-  await commit(directory)
-  const scope = await resolveBranchScope(directory)
-  const comparison = { ...scope.comparison }
+test("reconciliation rejects stale scopes after HEAD, branch, or comparison base changes", async (t) => {
+  for (const change of ["HEAD", "branch", "base", "base ref"] as const) {
+    await t.test(change, async (t) => {
+      const directory = await repository(t)
+      await git(directory, "checkout", "-b", "feature")
+      await put(directory, "shared.txt", "snapshot content\n")
+      await commit(directory)
+      const scope = await resolveBranchScope(directory)
+      const comparison = { ...scope.comparison }
+      await reconcileWorkspaceDiff(noSDK, scope)
+      const statePath = join(directory, ".opencode/ledger/state.json")
+      const before = await readFile(statePath)
 
-  await put(directory, "shared.txt", "later feature content\n")
-  await put(directory, "future.txt", "not in snapshot\n")
-  await commit(directory)
-  await git(directory, "checkout", "main")
-  await put(directory, "shared.txt", "later main content\n")
-  await put(directory, ".gitattributes", "*.txt -diff\n")
-  await commit(directory)
-  await put(directory, "shared.txt", "dirty current checkout\n")
-
-  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
-  const files = readFilesForScope(scope)
-  assert.deepEqual(scope.comparison, comparison)
-  assert.equal(files.length, 1)
-  assert.equal(files[0].content, "snapshot content\n")
-  assert.match(files[0].patch, /-base\n\+snapshot content/)
-  assert.doesNotMatch(files[0].patch, /later|dirty|future/)
+      if (change === "HEAD") {
+        await put(directory, "shared.txt", "later feature content\n")
+        await commit(directory)
+      } else if (change === "branch") {
+        await git(directory, "checkout", "-b", "another-feature")
+      } else if (change === "base") {
+        await git(directory, "update-ref", "refs/heads/main", comparison.head!)
+      } else {
+        await git(directory, "update-ref", "refs/remotes/origin/main", comparison.base!)
+        await git(directory, "branch", "-D", "main")
+      }
+      await put(directory, "shared.txt", "dirty current checkout\n")
+      const indexBefore = await readFile(join(directory, ".git/index"))
+      await assert.rejects(reconcileWorkspaceDiff(noSDK, scope), /branch or comparison base changed.*Refresh Ledger/)
+      assert.deepEqual(scope.comparison, comparison)
+      assert.deepEqual(await readFile(statePath), before)
+      assert.deepEqual(await readFile(join(directory, ".git/index")), indexBefore)
+      const files = readFilesForScope(scope)
+      assert.equal(files.length, 1)
+      assert.equal(files[0].content, "snapshot content\n")
+      assert.match(files[0].patch, /-base\n\+snapshot content/)
+      assert.doesNotMatch(files[0].patch, /later|dirty/)
+      const refreshed = await resolveBranchScope(directory)
+      assert.equal(await reconcileWorkspaceDiff(noSDK, refreshed), true)
+      assert.equal(readFilesForScope(refreshed)[0].content, "dirty current checkout\n")
+    })
+  }
 })
 
 test("unchanged hunk reviews survive new commits and hunk positions, but stay isolated by mode and branch", async (t) => {
@@ -390,6 +481,7 @@ test("literal filenames, rename-only, empty, binary, symlink, and gitlink change
   const gitlink = "vendor/sub module"
   await git(directory, "update-index", "--add", "--cacheinfo", "160000", "1234567890123456789012345678901234567890", gitlink)
   await git(directory, "commit", "-m", "varied file changes")
+  await mkdir(join(directory, gitlink), { recursive: true })
   for (const [key, value] of Object.entries({
     "diff.mnemonicPrefix": "true", "diff.noprefix": "true", "diff.relative": "true",
     "diff.srcPrefix": "old/", "diff.dstPrefix": "new/", "color.ui": "always",
@@ -423,6 +515,194 @@ test("literal filenames, rename-only, empty, binary, symlink, and gitlink change
   assert.equal(files.get("type change.txt")?.blocks.length, 2)
   for (const file of files.values()) assert.doesNotMatch(file.patch, /\u001b\[/)
   assert.match(files.get("with spaces.txt")!.patch, /^diff --git a\/with spaces.txt b\/with spaces.txt/)
+})
+
+test("untracked literal names, empty files, binaries, and symlinks are captured but ignored files are not", async (t) => {
+  const directory = await repository(t, {
+    ".gitignore": ".opencode/\nignored/\n*.ignored\n",
+    "target.txt": "target contents must not replace symlink contents\n",
+  })
+  const names = ["with spaces.txt", 'quote " and apostrophe\'.txt', "\u96ea/caf\u00e9.txt", "tab\tand\nnewline.txt", "back\\slash.txt", " leading and trailing ", "-leading-dash.txt", ":(glob)*.txt"]
+  for (const [index, name] of names.entries()) await put(directory, name, `untracked literal file ${index}\n`)
+  await put(directory, "empty.txt", "")
+  await put(directory, "binary.bin", Buffer.from([0, 1, 2, 3]))
+  await symlink("target.txt", join(directory, "link.txt"))
+  await symlink("missing-target", join(directory, "dangling.txt"))
+  await put(directory, "ignored/nested.txt", "ignored directory\n")
+  await put(directory, "secret.ignored", "ignored extension\n")
+  const indexBefore = await readFile(join(directory, ".git/index"))
+  const scope = await resolveBranchScope(directory)
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  const files = new Map(readFilesForScope(scope).map((file) => [file.path, file]))
+  assert.deepEqual([...files.keys()].sort(), [...names, "empty.txt", "binary.bin", "link.txt", "dangling.txt"].sort())
+  for (const [index, name] of names.entries()) {
+    assert.equal(files.get(name)?.content, `untracked literal file ${index}\n`)
+    assert.ok(files.get(name)!.patch.includes(`+untracked literal file ${index}`))
+  }
+  assert.ok([...files.values()].every((file) => file.status === "added"))
+  assert.equal(files.get("empty.txt")?.content, "")
+  assert.equal(files.get("empty.txt")?.additions, 0)
+  assert.match(files.get("empty.txt")!.patch, /new file mode 100644/)
+  assert.equal(files.get("binary.bin")?.content, "")
+  assert.match(files.get("binary.bin")!.patch, /Binary files/)
+  for (const [name, target] of [["link.txt", "target.txt"], ["dangling.txt", "missing-target"]]) {
+    assert.equal(files.get(name)?.content, target)
+    assert.match(files.get(name)!.patch, /new file mode 120000/)
+    assert.ok(files.get(name)!.patch.includes(`+${target}`))
+  }
+  assert.deepEqual(await readFile(join(directory, ".git/index")), indexBefore)
+  assert.equal(await git(directory, "diff", "--cached"), "")
+})
+
+test("the copied index retains force-added ignored files while capturing their unstaged edits", async (t) => {
+  const directory = await repository(t, { ".gitignore": ".opencode/\n*.ignored\n" })
+  await put(directory, "kept.ignored", "staged ignored file\n")
+  await git(directory, "add", "--force", "kept.ignored")
+  await put(directory, "kept.ignored", "unstaged ignored file\n")
+  await put(directory, "excluded.ignored", "never staged\n")
+  const indexBefore = await readFile(join(directory, ".git/index"))
+  const scope = await resolveBranchScope(directory)
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  const files = readFilesForScope(scope)
+  assert.deepEqual(files.map((file) => file.path), ["kept.ignored"])
+  assert.equal(files[0].status, "added")
+  assert.equal(files[0].content, "unstaged ignored file\n")
+  assert.match(files[0].patch, /\+unstaged ignored file/)
+  assert.deepEqual(await readFile(join(directory, ".git/index")), indexBefore)
+  assert.equal(await git(directory, "show", ":kept.ignored"), "staged ignored file")
+})
+
+test("dirty attributes and normalized content come from the same captured tree as the patch", async (t) => {
+  const directory = await repository(t, {
+    ".gitattributes": "*.txt -diff\n",
+    "shared.txt": "before\nbase\nafter\n",
+  })
+  await put(directory, ".gitattributes", "*.txt diff text eol=lf\n")
+  await put(directory, "shared.txt", "before\r\nlocal edit\r\nafter\r\n")
+  const scope = await resolveBranchScope(directory)
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  const files = new Map(readFilesForScope(scope).map((file) => [file.path, file]))
+  assert.deepEqual([...files.keys()].sort(), [".gitattributes", "shared.txt"])
+  assert.equal(files.get(".gitattributes")?.content, "*.txt diff text eol=lf\n")
+  assert.match(files.get(".gitattributes")!.patch, /-\*\.txt -diff\n\+\*\.txt diff text eol=lf/)
+  assert.equal(files.get("shared.txt")?.content, "before\nlocal edit\nafter\n")
+  assert.match(files.get("shared.txt")!.patch, / before\n-base\n\+local edit\n after/)
+  assert.doesNotMatch(files.get("shared.txt")!.patch, /Binary files|\r/)
+  assert.equal(await readFile(join(directory, "shared.txt"), "utf8"), "before\r\nlocal edit\r\nafter\r\n")
+})
+
+test("materialized assume-unchanged and skip-worktree edits are captured without changing real index flags", async (t) => {
+  const directory = await repository(t, { "assumed.txt": "base\n", "skipped.txt": "base\n" })
+  await symlink("old-target", join(directory, "skipped-link"))
+  await commit(directory)
+  await git(directory, "update-index", "--assume-unchanged", "assumed.txt")
+  await git(directory, "update-index", "--skip-worktree", "skipped.txt", "skipped-link")
+  const flags = await git(directory, "ls-files", "-v")
+  assert.match(flags, /^h assumed\.txt$/m)
+  assert.match(flags, /^S skipped\.txt$/m)
+  assert.match(flags, /^S skipped-link$/m)
+  await put(directory, "assumed.txt", "assumed edit\n")
+  await put(directory, "skipped.txt", "skipped edit\n")
+  await rm(join(directory, "skipped-link"))
+  await symlink("missing-target", join(directory, "skipped-link"))
+  const indexBefore = await readFile(join(directory, ".git/index"))
+  const scope = await resolveBranchScope(directory)
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  const files = new Map(readFilesForScope(scope).map((file) => [file.path, file]))
+  assert.deepEqual([...files.keys()].sort(), ["assumed.txt", "skipped-link", "skipped.txt"])
+  for (const [name, content] of [["assumed.txt", "assumed edit\n"], ["skipped.txt", "skipped edit\n"], ["skipped-link", "missing-target"]]) {
+    assert.equal(files.get(name)?.status, "modified")
+    assert.equal(files.get(name)?.content, content)
+    assert.ok(files.get(name)!.patch.includes(`+${content.trimEnd()}`))
+  }
+  assert.deepEqual(await readFile(join(directory, ".git/index")), indexBefore)
+  assert.equal(await git(directory, "ls-files", "-v"), flags)
+})
+
+test("sparse checkouts preserve absent tracked files and capture materialized changes outside the cone", async (t) => {
+  const directory = await repository(t, {
+    "inside/kept.txt": "inside base\n",
+    "outside/absent.txt": "outside base\n",
+    "outside/materialized.txt": "materialized base\n",
+  })
+  await git(directory, "checkout", "-b", "feature")
+  await put(directory, "outside/absent.txt", "committed outside change\n")
+  await commit(directory)
+  await git(directory, "sparse-checkout", "init", "--cone", "--sparse-index")
+  await git(directory, "sparse-checkout", "set", "inside")
+  assert.equal(existsSync(join(directory, "outside/absent.txt")), false)
+  assert.equal(existsSync(join(directory, "outside/materialized.txt")), false)
+  const scope = await resolveBranchScope(directory)
+  const sparseIndex = await readFile(join(directory, ".git/index"))
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  const initial = readFilesForScope(scope)
+  assert.deepEqual(initial.map((file) => file.path), ["outside/absent.txt"])
+  assert.equal(initial[0].status, "modified")
+  assert.equal(initial[0].content, "committed outside change\n")
+  assert.match(initial[0].patch, /-outside base\n\+committed outside change/)
+  assert.deepEqual(await readFile(join(directory, ".git/index")), sparseIndex)
+
+  await put(directory, "outside/materialized.txt", "outside local edit\n")
+  await put(directory, "outside/new.txt", "outside untracked\n")
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  const files = new Map(readFilesForScope(scope).map((file) => [file.path, file]))
+  assert.deepEqual([...files.keys()].sort(), ["outside/absent.txt", "outside/materialized.txt", "outside/new.txt"])
+  assert.deepEqual(files.get("outside/absent.txt"), initial[0])
+  assert.equal(files.get("outside/materialized.txt")?.status, "modified")
+  assert.equal(files.get("outside/materialized.txt")?.content, "outside local edit\n")
+  assert.match(files.get("outside/materialized.txt")!.patch, /-materialized base\n\+outside local edit/)
+  assert.equal(files.get("outside/new.txt")?.status, "added")
+  assert.equal(files.get("outside/new.txt")?.content, "outside untracked\n")
+  assert.equal(existsSync(join(directory, "outside/absent.txt")), false)
+  assert.deepEqual(await readFile(join(directory, ".git/index")), sparseIndex)
+})
+
+test("a missing real index is not created while capturing tracked and untracked changes", async (t) => {
+  const directory = await repository(t, { "shared.txt": "base\n", "removed.txt": "delete me\n" })
+  await rm(join(directory, ".git/index"))
+  await put(directory, "shared.txt", "local edit\n")
+  await put(directory, "new.txt", "untracked\n")
+  await rm(join(directory, "removed.txt"))
+  const scope = await resolveBranchScope(directory)
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  const files = new Map(readFilesForScope(scope).map((file) => [file.path, file]))
+  assert.deepEqual([...files.keys()].sort(), ["new.txt", "removed.txt", "shared.txt"])
+  assert.equal(files.get("shared.txt")?.content, "local edit\n")
+  assert.match(files.get("shared.txt")!.patch, /-base\n\+local edit/)
+  assert.equal(files.get("new.txt")?.status, "added")
+  assert.equal(files.get("new.txt")?.content, "untracked\n")
+  assert.equal(files.get("removed.txt")?.status, "deleted")
+  assert.equal(files.get("removed.txt")?.content, "")
+  assert.equal(existsSync(join(directory, ".git/index")), false)
+})
+
+test("linked worktrees capture their own working state without changing either real index", async (t) => {
+  const directory = await repository(t)
+  const linked = join(await temporaryDirectory(t), "linked")
+  await git(directory, "worktree", "add", "-b", "feature", linked)
+  await put(directory, "shared.txt", "main staged edit\n")
+  await git(directory, "add", "shared.txt")
+  await put(linked, "shared.txt", "linked staged edit\n")
+  await git(linked, "add", "shared.txt")
+  await put(linked, "shared.txt", "linked unstaged edit\n")
+  await put(linked, "new.txt", "linked untracked\n")
+  const mainIndex = join(directory, ".git/index")
+  const linkedIndex = await git(linked, "rev-parse", "--path-format=absolute", "--git-path", "index")
+  assert.notEqual(linkedIndex, mainIndex)
+  const mainBefore = await readFile(mainIndex)
+  const linkedBefore = await readFile(linkedIndex)
+  const scope = await resolveBranchScope(linked)
+  assert.equal(scope.directory, linked)
+  assert.equal(scope.comparison?.name, "feature")
+  assert.equal(await reconcileWorkspaceDiff(noSDK, scope), true)
+  const files = new Map(readFilesForScope(scope).map((file) => [file.path, file]))
+  assert.deepEqual([...files.keys()].sort(), ["new.txt", "shared.txt"])
+  assert.equal(files.get("shared.txt")?.content, "linked unstaged edit\n")
+  assert.match(files.get("shared.txt")!.patch, /-base\n\+linked unstaged edit/)
+  assert.equal(files.get("new.txt")?.content, "linked untracked\n")
+  assert.deepEqual(await readFile(mainIndex), mainBefore)
+  assert.deepEqual(await readFile(linkedIndex), linkedBefore)
+  assert.equal(existsSync(join(directory, ".opencode/ledger/state.json")), false)
 })
 
 test("worktree mode retains raw SDK diffs, structured fallback, and workspace file content", async (t) => {

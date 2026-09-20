@@ -1,6 +1,6 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { impactRank } from "./constants"
 import { fileApproved, fileImpact } from "./domain"
 import type { BlockExplanation, BlockReview, BranchComparison, DiffMode, FileAnalysis, LedgerBlock, LedgerFile, LedgerScope } from "./types"
@@ -195,7 +195,7 @@ function orderedFiles(files: LedgerFile[]) {
     const bImpact = fileImpact(b)
     if (isImpact(aImpact) && isImpact(bImpact)) return impactRank[aImpact] - impactRank[bImpact]
     if (isImpact(aImpact) !== isImpact(bImpact)) return isImpact(aImpact) ? -1 : 1
-    return a.path.localeCompare(b.path) || b.updatedAt - a.updatedAt
+    return basename(a.path).localeCompare(basename(b.path)) || a.path.localeCompare(b.path) || b.updatedAt - a.updatedAt
   })
 }
 

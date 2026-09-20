@@ -10,7 +10,7 @@ import { openEditor } from "../editor"
 import { reconcileWorkspaceDiff, resolveBranchScope } from "../git"
 import { ledgerAction } from "../keys"
 import { closeLedger, writeClipboard, yankBlockToClipboard, yankUnresolvedCommentsToClipboard } from "../runtime"
-import { currentFile, ledgerFiles, ledgerStateVersion, routeScope, setBlockComment, setBlockResolved, setFileAnalysisResult, setFileResolved } from "../storage"
+import { currentFile, ledgerFiles, ledgerStateVersion, readFilesForScope, routeScope, setBlockComment, setBlockResolved, setFileAnalysisResult, setFileResolved } from "../storage"
 import type { DiffMode, InspectFocus, InspectLayout, LedgerAction, LedgerBlock, LedgerControls, LedgerFile, LedgerNotice, LedgerScope, NoticeTone, VisibleDiffLine } from "../types"
 import { clip, errorMessage, fileLines, filename, parseRouteParams, splitWidths, wrapText } from "../utils"
 import { DiffLine } from "./DiffLine"
@@ -125,7 +125,7 @@ const helpRows: HelpRow[] = [
   { section: "Explanation", keys: "esc", desc: "Return focus to diff" },
   { section: "General", keys: "] / [", desc: "Next or previous file" },
   { section: "General", keys: "m", desc: "Generate commit message" },
-  { section: "General", keys: "b", desc: "Toggle branch/uncommitted changes" },
+  { section: "General", keys: "b", desc: "Toggle branch + local / uncommitted only" },
   { section: "General", keys: "r", desc: "Refresh Git diff" },
   { section: "General", keys: "?", desc: "Toggle help" },
   { section: "General", keys: "q", desc: "Close ledger" },
@@ -225,7 +225,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
   const contentWidth = () => Math.max(1, dim().width - 4)
   const commentCountText = () => (commentCount() ? ` · ${commentCount()} ${commentCount() === 1 ? "comment" : "comments"}` : "")
-  const sourceLabel = () => mode() === "branch" ? `${scope().comparison?.name ?? "Branch"} vs ${scope().comparison?.baseRef ?? "main"}` : "Uncommitted"
+  const sourceLabel = () => mode() === "branch" ? `${scope().comparison?.name ?? "Branch"} + local vs ${scope().comparison?.baseRef ?? "main"}` : "Uncommitted Only"
   const headerTitle = () => `Ledger | ${sourceLabel()} | ${approvedBlocks()}/${totalBlocks()} approved${commentCountText()}`
   const headerWidth = () => Math.max(1, contentWidth() - 2)
   const headerHelpText = () => notice()?.text ?? helpText()
@@ -614,14 +614,22 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       const next = source === "branch" ? await resolveBranchScope(scope().directory) : routeScope(props.api, route.directory)
       if (!active()) return false
       const changedScope = next.id !== scope().id
-      const changedSnapshot = changedScope || JSON.stringify(next.comparison) !== JSON.stringify(scope().comparison)
-      if (source === "branch" && !force && !changedSnapshot && diffReady() && !diffError()) return true
+      let changedSnapshot = changedScope || JSON.stringify(next.comparison) !== JSON.stringify(scope().comparison)
+      const previous = new Map(readFilesForScope(scope()).map((file) => [file.id, file]))
       if (changedSnapshot) {
         cancelAnalysis(preparingCommit !== undefined && preparingCommit === commitRequestToken)
         setDiffReady(false)
       }
       const applied = await reconcileWorkspaceDiff(props.api, next, active)
       if (!applied || !active()) return false
+      const current = readFilesForScope(next)
+      if (!changedSnapshot && (current.length !== previous.size || current.some((file) => {
+        const before = previous.get(file.id)
+        return before?.patch !== file.patch || before?.content !== file.content
+      }))) {
+        changedSnapshot = true
+        cancelAnalysis(preparingCommit !== undefined && preparingCommit === commitRequestToken)
+      }
       setScope(next)
       setDiffError(undefined)
       setDiffReady(true)
@@ -813,7 +821,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
               return <DiffLine line={line.line} width={innerWidth} scrollX={horizontalScroll()} kind={line.kind} active={active()} blockActive={inspect() && rowHasActiveGutter(line)} explanationActive={explanationRegion()} blockResolved={!!activeBlock()?.resolved} path={file.path} filetype={selectedFiletype()} syntaxStyle={syntaxStyle()} theme={theme} />
             }}</For>
           </box>
-        ) : <text fg={diffError() ? theme.error : theme.textMuted}>{diffError() ? `${diffError()} Press r to retry or b to switch views.` : refreshingDiff() ? "Loading Git changes..." : mode() === "branch" ? `No committed branch changes against ${scope().comparison?.baseRef ?? "main"}. Press b for uncommitted changes.` : "No uncommitted Git changes. Press b for branch changes."}</text>}
+        ) : <text fg={diffError() ? theme.error : theme.textMuted}>{diffError() ? `${diffError()} Press r to retry or b to switch views.` : refreshingDiff() ? "Loading Git changes..." : mode() === "branch" ? `No net branch or local changes since the merge base with ${scope().comparison?.baseRef ?? "main"}. Press b for uncommitted only.` : "No uncommitted Git changes. Press b for branch + local changes."}</text>}
       </box>
     )
   }
@@ -984,7 +992,6 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     },
     editor() {
       withActiveBlock((file, block) => {
-        if (mode() === "branch") showLedgerNotice("Opening the working copy; its line numbers may differ from HEAD.", "warning")
         void openEditor(props.api, scope(), file, block).then((result) => showLedgerNotice(result.text, result.tone))
       })
     },
