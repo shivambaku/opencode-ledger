@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { Show } from "solid-js"
 import type { SyntaxStyle } from "@opentui/core"
-import type { TuiThemeCurrent } from "@opencode-ai/plugin/tui"
+import type { ResolvedTheme as TuiThemeCurrent } from "@opencode/theme/tui"
 import type { VisibleDiffKind } from "../types"
 import { activeRowBackground, rowBackground, rowColor } from "./styles"
 
@@ -14,10 +14,10 @@ export function DiffLine(props: { line: string; width: number; scrollX: number; 
   }
   const gutter = () => (props.blockActive ? "▌ " : "  ")
   const gutterColor = () => {
-    if (!props.blockActive) return props.theme.borderSubtle
-    if (props.active) return props.theme.primary
-    if (props.blockResolved) return props.theme.success
-    return props.explanationActive ? props.theme.accent : props.theme.secondary
+    if (!props.blockActive) return props.theme.border.base
+    if (props.active) return props.theme.text.action.primary.base
+    if (props.blockResolved) return props.theme.text.feedback.success.base
+    return props.explanationActive ? props.theme.hue.accent[500] : props.theme.text.action.secondary.base
   }
   const width = () => Math.max(1, props.width)
   const contentWidth = () => Math.max(1, width() - 2)

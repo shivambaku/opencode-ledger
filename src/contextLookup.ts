@@ -1,7 +1,5 @@
-import { Database } from "bun:sqlite"
-import { existsSync } from "node:fs"
-import { homedir } from "node:os"
-import { basename, join } from "node:path"
+import type { OpenCodeClient, SessionMessageInfo } from "@opencode/client"
+import { join } from "node:path"
 import type { LedgerBlock, LedgerFile, LedgerScope } from "./types"
 import { isRecord, limitText, normalizePath } from "./utils"
 
@@ -10,12 +8,9 @@ type CandidateRow = {
   messageID: string
   sessionID: string
   timeCreated: number
-  data: string
+  data: unknown
   title: string
 }
-
-type MessageRow = { id: string; timeCreated: number; data: string }
-type PartRow = { id: string; messageID: string; data: string }
 
 export type ContextMatch = {
   hunkID: string
@@ -32,35 +27,17 @@ export type ContextMatch = {
 }
 
 export type RetrievedContext = {
-  source: "opencode-db" | "workspace"
-  dbPath?: string
+  source: "opencode-api" | "workspace"
   matches: ContextMatch[]
   totalIncludedChars: number
   rendered: string
   error?: string
 }
 
-function opencodeDbPath() {
-  return join(homedir(), ".local/share/opencode/opencode.db")
-}
-
-function jsonParse(value: string): unknown {
-  try {
-    return JSON.parse(value) as unknown
-  } catch {
-    return undefined
-  }
-}
-
 function jsonText(value: unknown, path: string[]) {
   let current = value
   for (const key of path) current = isRecord(current) ? current[key] : undefined
   return typeof current === "string" ? current : ""
-}
-
-function messageRole(row: MessageRow) {
-  const data = jsonParse(row.data)
-  return isRecord(data) && typeof data.role === "string" ? data.role : "message"
 }
 
 function changedLines(block: LedgerBlock) {
@@ -76,8 +53,7 @@ function changedLines(block: LedgerBlock) {
 function candidateNeedles(scope: LedgerScope, file: LedgerFile) {
   const absolute = normalizePath(join(scope.directory, file.path))
   const relative = normalizePath(file.path)
-  const name = basename(relative)
-  return { absolute, relative, name }
+  return { absolute, relative }
 }
 
 function cleanPath(value: string) {
@@ -169,9 +145,9 @@ function targetToolText(data: unknown, scope: LedgerScope, file: LedgerFile) {
 }
 
 function scoreCandidate(row: CandidateRow, scope: LedgerScope, file: LedgerFile, block: LedgerBlock): (ContextMatch & { text: string }) | undefined {
-  const data = jsonParse(row.data)
+  const data = row.data
   if (!isRecord(data)) return undefined
-  const tool = typeof data.tool === "string" ? data.tool : "tool"
+  const tool = typeof data.name === "string" ? data.name : "tool"
   const target = targetToolText(data, scope, file)
   const text = target.text
   if (!text) return undefined
@@ -219,89 +195,74 @@ function scoreCandidate(row: CandidateRow, scope: LedgerScope, file: LedgerFile,
   }
 }
 
-function messageText(parts: PartRow[], messageID: string) {
-  return parts
-    .filter((part) => part.messageID === messageID)
-    .map((part) => {
-      const data = jsonParse(part.data)
-      return isRecord(data) && data.type === "text" && typeof data.text === "string" ? data.text : ""
-    })
-    .filter(Boolean)
-    .join("\n")
+function messageText(message: SessionMessageInfo) {
+  if (message.type === "user") return message.text
+  if (message.type !== "assistant") return ""
+  return message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
 }
 
 function compactText(value: string, max = 700) {
   return limitText(value.trim().replace(/\s+/g, " "), max)
 }
 
-function renderMatch(db: Database, match: ContextMatch & { text: string }) {
-  const messages = db
-    .query("SELECT id, time_created AS timeCreated, data FROM message WHERE session_id = ? ORDER BY time_created, id")
-    .all(match.sessionID) as MessageRow[]
+function renderMatch(messages: SessionMessageInfo[], match: ContextMatch & { text: string }) {
   const matchIndex = messages.findIndex((message) => message.id === match.messageID)
   if (matchIndex < 0) return ""
 
   let start = matchIndex
-  while (start > 0 && messageRole(messages[start]) !== "user") start--
+  while (start > 0 && messages[start].type !== "user") start--
   const end = Math.min(messages.length - 1, matchIndex + 1)
   const window = messages.slice(start, end + 1)
-  const parts = db
-    .query(`SELECT id, message_id AS messageID, data FROM part WHERE session_id = ? AND message_id IN (${window.map(() => "?").join(",")}) ORDER BY time_created, id`)
-    .all(match.sessionID, ...window.map((message) => message.id)) as PartRow[]
   match.includedMessageIDs = window.map((message) => message.id)
 
   const rendered: string[] = []
   for (const message of window) {
-    const role = messageRole(message).toUpperCase()
-    const text = messageText(parts, message.id)
-    if (text.trim()) rendered.push(`${role === "USER" ? "User request" : "Assistant note"}: ${compactText(text, 900)}`)
+    const text = messageText(message)
+    if (text.trim()) rendered.push(`${message.type === "user" ? "User request" : "Assistant note"}: ${compactText(text, 900)}`)
     if (message.id === match.messageID) rendered.push(`Matched changed text: ${match.matchedLines.map((line) => `\`${line}\``).join(", ")}`)
   }
   return rendered.join("\n\n")
 }
 
-export function retrieveReviewContextSync(scope: LedgerScope, file: LedgerFile): RetrievedContext {
-  const dbPath = opencodeDbPath()
-  if (!existsSync(dbPath)) return { source: "workspace", dbPath, matches: [], totalIncludedChars: 0, rendered: "" }
-
+export async function retrieveReviewContext(client: OpenCodeClient, scope: LedgerScope, file: LedgerFile): Promise<RetrievedContext> {
   try {
-    const db = new Database(dbPath, { readonly: true })
-    try {
-      const { absolute, relative, name } = candidateNeedles(scope, file)
-      const rows = db
-        .query(
-          `SELECT p.id AS partID, p.message_id AS messageID, p.session_id AS sessionID, p.time_created AS timeCreated, p.data, s.title
-           FROM part p JOIN session s ON s.id = p.session_id
-           WHERE s.directory = ?
-             AND json_extract(p.data, '$.type') = 'tool'
-             AND json_extract(p.data, '$.state.status') = 'completed'
-             AND json_extract(p.data, '$.tool') IN ('apply_patch', 'edit', 'write')
-             AND (p.data LIKE ? OR p.data LIKE ? OR p.data LIKE ?)
-           ORDER BY p.time_created DESC
-           LIMIT 200`,
-        )
-        .all(scope.directory, `%${absolute}%`, `%${relative}%`, `%${name}%`) as CandidateRow[]
-
-      const matches: (ContextMatch & { text: string })[] = []
-      const sections: string[] = []
-      for (const block of file.blocks) {
-        const match = rows
-          .map((row) => scoreCandidate(row, scope, file, block))
-          .filter((item): item is ContextMatch & { text: string } => !!item)
-          .sort((a, b) => b.score - a.score || b.timeCreated - a.timeCreated)[0]
-        if (match) {
-          const rendered = renderMatch(db, match)
-          matches.push(match)
-          sections.push(`Change block ${block.id}:\n${rendered || "(not available)"}`)
-        } else sections.push(`Change block ${block.id}:\n(not available)`)
+    const signal = AbortSignal.timeout(10000)
+    const sessions = await client.session.list({ directory: scope.directory, limit: 50, order: "desc" }, { signal })
+    const rows: CandidateRow[] = []
+    const transcripts = new Map<string, SessionMessageInfo[]>()
+    for (const session of sessions.data) {
+      if (session.location.directory !== scope.directory || session.metadata?.ledger === true) continue
+      const messages = await client.session.context({ sessionID: session.id }, { signal })
+      transcripts.set(session.id, messages)
+      for (const message of messages) {
+        if (message.type !== "assistant") continue
+        for (const part of message.content) {
+          if (part.type !== "tool" || part.state.status !== "completed" || !["patch", "apply_patch", "edit", "write"].includes(part.name)) continue
+          if (!targetToolText(part, scope, file).text) continue
+          rows.push({ partID: part.id, messageID: message.id, sessionID: session.id, timeCreated: part.time.created, data: part, title: session.title ?? "Untitled" })
+        }
       }
-      const rendered = limitText(sections.join("\n\n---\n\n"), 7000)
-      const debugMatches = matches.map(({ text: _text, ...match }) => match)
-      return { source: debugMatches.length ? "opencode-db" : "workspace", dbPath, matches: debugMatches, totalIncludedChars: rendered.length, rendered }
-    } finally {
-      db.close()
+      if (rows.length >= 200) break
     }
+    rows.sort((a, b) => b.timeCreated - a.timeCreated)
+    rows.splice(200)
+    const matches: (ContextMatch & { text: string })[] = []
+    const sections: string[] = []
+    for (const block of file.blocks) {
+      const match = rows
+        .map((row) => scoreCandidate(row, scope, file, block))
+        .filter((item): item is ContextMatch & { text: string } => !!item)
+        .sort((a, b) => b.score - a.score || b.timeCreated - a.timeCreated)[0]
+      if (match) {
+        const rendered = renderMatch(transcripts.get(match.sessionID) ?? [], match)
+        matches.push(match)
+        sections.push(`Change block ${block.id}:\n${rendered || "(not available)"}`)
+      } else sections.push(`Change block ${block.id}:\n(not available)`)
+    }
+    const rendered = limitText(sections.join("\n\n---\n\n"), 7000)
+    const debugMatches = matches.map(({ text: _text, ...match }) => match)
+    return { source: debugMatches.length ? "opencode-api" : "workspace", matches: debugMatches, totalIncludedChars: rendered.length, rendered }
   } catch (error) {
-    return { source: "workspace", dbPath, matches: [], totalIncludedChars: 0, rendered: "", error: error instanceof Error ? error.message : String(error) }
+    return { source: "workspace", matches: [], totalIncludedChars: 0, rendered: "", error: error instanceof Error ? error.message : String(error) }
   }
 }

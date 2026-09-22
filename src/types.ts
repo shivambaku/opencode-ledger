@@ -94,7 +94,7 @@ export type ParsedBlock = {
 }
 
 export type LedgerKey = { name?: string; sequence?: string; ctrl?: boolean; shift?: boolean; preventDefault?: () => void; stopPropagation?: () => void }
-export type LedgerAction = "down" | "up" | "nextFile" | "prevFile" | "diffLeft" | "diffRight" | "yank" | "yankComments" | "comment" | "approve" | "editor" | "inspect" | "explanation" | "layout" | "diffDown" | "diffUp" | "prevBlock" | "nextBlock" | "help" | "analyze" | "analyzeAll" | "commitMessage" | "stop" | "back" | "close" | "toggleMode" | "reloadDiff"
+export type LedgerAction = "down" | "up" | "nextFile" | "prevFile" | "diffLeft" | "diffRight" | "yank" | "yankComments" | "comment" | "approve" | "editor" | "inspect" | "explanation" | "layout" | "diffDown" | "diffUp" | "prevBlock" | "nextBlock" | "help" | "analyze" | "analyzeAll" | "commitMessage" | "stop" | "back" | "close" | "toggleMode" | "chooseBase" | "reloadDiff"
 export type InspectFocus = "diff" | "explanation"
 export type InspectLayout = "side" | "bottom"
 export type VisibleDiffKind = "code" | "add" | "delete"
@@ -102,7 +102,8 @@ export type VisibleDiffLine = { key: string; line: string; rowIndex: number; kin
 export type NoticeTone = "muted" | "info" | "success" | "warning" | "error"
 export type LedgerNotice = { text: string; tone: NoticeTone }
 export type DiffMode = "branch" | "worktree"
-export type BranchComparison = { name: string; baseRef: "main" | "origin/main"; head: string; base: string; mergeBase: string }
+export type BranchComparison = { name: string; baseRef: string; head: string; base: string; mergeBase: string }
+export type BaseBranch = { ref: string; name: string; kind: "local" | "remote" }
 export type LedgerScope = { id: string; directory: string; mode: DiffMode; comparison?: BranchComparison }
 
 export type LedgerControls = {

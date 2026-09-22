@@ -1,4 +1,4 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Context as TuiPluginApi } from "@opencode/plugin/tui/context"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { COMMIT_MESSAGE_SCHEMA, MAX_EXPLANATIONS_PER_HUNK, REVIEW_SCHEMA } from "./constants"
@@ -6,7 +6,9 @@ import { buildCommitMessagePrompt } from "./commitPrompt"
 import { buildReviewPrompt, type ReviewPrompt } from "./reviewPrompt"
 import { ensureLedgerIgnored } from "./storage"
 import type { AnalysisModel, BlockExplanation, BlockReview, CommitMessageResult, FileAnalysis, LedgerBlock, LedgerFile, LedgerScope } from "./types"
-import { clip, isImpact, isRecord, textFromParts } from "./utils"
+import { clip, isImpact, isRecord } from "./utils"
+
+const requests = new Map<string, AbortController>()
 
 function debugEnabled() {
   return process.env.LEDGER_DEBUG === "1"
@@ -141,8 +143,9 @@ function parseAnalysisValue(value: unknown, file: LedgerFile): { analysis: FileA
 }
 
 export async function abortSession(api: TuiPluginApi, scope: LedgerScope, sessionID: string) {
+  requests.get(sessionID)?.abort()
   try {
-    await api.client.session.abort({ sessionID, directory: scope.directory })
+    await api.client.session.interrupt({ sessionID, resume: false })
   } catch {
     // Stop is best effort; cancellation still prevents Ledger from using the session.
   }
@@ -150,7 +153,7 @@ export async function abortSession(api: TuiPluginApi, scope: LedgerScope, sessio
 
 export async function deleteSession(api: TuiPluginApi, scope: LedgerScope, sessionID: string) {
   try {
-    await api.client.session.delete({ sessionID, directory: scope.directory })
+    await api.client.session.remove({ sessionID })
   } catch {
     // Analysis sessions are temporary; cleanup is best effort.
   }
@@ -159,18 +162,36 @@ export async function deleteSession(api: TuiPluginApi, scope: LedgerScope, sessi
 async function createAnalysisSession(api: TuiPluginApi, scope: LedgerScope, shouldContinue: () => boolean, model: AnalysisModel | undefined, title = "Ledger analysis") {
   if (!shouldContinue()) throw new Error("Analysis stopped.")
   const result = await api.client.session.create({
-    directory: scope.directory,
+    location: { directory: scope.directory },
     title,
     agent: "plan",
     model: model ? { providerID: model.providerID, id: model.modelID } : undefined,
+    metadata: { ledger: true },
   })
-  if (result.error || !result.data) throw new Error("Failed to create Ledger analysis session.")
   if (!shouldContinue()) {
-    await abortSession(api, scope, result.data.id)
-    await deleteSession(api, scope, result.data.id)
+    await abortSession(api, scope, result.id)
+    await deleteSession(api, scope, result.id)
     throw new Error("Analysis stopped.")
   }
-  return result.data.id
+  return result.id
+}
+
+async function generateJSON(api: TuiPluginApi, sessionID: string, prompt: string, schema: unknown, shouldContinue: () => boolean) {
+  if (!shouldContinue()) throw new Error("Analysis stopped.")
+  const controller = new AbortController()
+  requests.set(sessionID, controller)
+  try {
+    // V2 prompt() admits work asynchronously. generate() waits for a tool-free
+    // response, keeping the supplied review snapshot authoritative.
+    const result = await api.client.session.generate({
+      sessionID,
+      prompt: `${prompt}\n\nReturn only a JSON object matching this JSON Schema:\n${JSON.stringify(schema)}`,
+    }, { signal: controller.signal })
+    if (!shouldContinue() || controller.signal.aborted) throw new Error("Analysis stopped.")
+    return result.text
+  } finally {
+    requests.delete(sessionID)
+  }
 }
 
 export async function requestAnalysis(api: TuiPluginApi, scope: LedgerScope, file: LedgerFile, shouldContinue: () => boolean, modelOption?: unknown, onSession?: (sessionID: string) => void) {
@@ -178,23 +199,12 @@ export async function requestAnalysis(api: TuiPluginApi, scope: LedgerScope, fil
   const sessionID = await createAnalysisSession(api, scope, shouldContinue, model)
   onSession?.(sessionID)
   if (!shouldContinue()) throw new Error("Analysis stopped.")
-  const request = await buildReviewPrompt(scope, file)
+  const request = await buildReviewPrompt(api.client, scope, file)
   let response: { structured?: unknown; rawText?: string } | undefined
   try {
-    const result = await api.client.session.prompt({
-      sessionID,
-      directory: scope.directory,
-      agent: "plan",
-      model: model ? { providerID: model.providerID, modelID: model.modelID } : undefined,
-      format: { type: "json_schema", schema: REVIEW_SCHEMA },
-      parts: [{ type: "text", text: request.prompt }],
-    })
-    if (result.error || !result.data) {
-      response = { rawText: result.error ? JSON.stringify(result.error) : undefined }
-      throw new Error("Ledger analysis failed.")
-    }
-    response = { structured: result.data.info.structured, rawText: textFromParts(result.data.parts) }
-    const parsed = result.data.info.structured !== undefined ? parseAnalysisValue(result.data.info.structured, file) : parseAnalysisValue(response.rawText ?? "", file)
+    const text = await generateJSON(api, sessionID, request.prompt, REVIEW_SCHEMA, shouldContinue)
+    response = { rawText: text }
+    const parsed = parseAnalysisValue(text, file)
     writeAnalysisDebug(scope, file, sessionID, request, response, undefined, model)
     return parsed
   } catch (error) {
@@ -210,16 +220,8 @@ export async function requestCommitMessage(api: TuiPluginApi, scope: LedgerScope
   const sessionID = await createAnalysisSession(api, scope, shouldContinue, model, "Ledger commit message")
   onSession?.(sessionID)
   if (!shouldContinue()) throw new Error("Analysis stopped.")
-  const result = await api.client.session.prompt({
-    sessionID,
-    directory: scope.directory,
-    agent: "plan",
-    model: model ? { providerID: model.providerID, modelID: model.modelID } : undefined,
-    format: { type: "json_schema", schema: COMMIT_MESSAGE_SCHEMA },
-    parts: [{ type: "text", text: request.prompt }],
-  })
-  if (result.error || !result.data) throw new Error("Commit message generation failed.")
+  const text = await generateJSON(api, sessionID, request.prompt, COMMIT_MESSAGE_SCHEMA, shouldContinue)
 
   const meta = { quality: request.quality, analyzedFiles: request.analyzedFiles, totalFiles: request.totalFiles }
-  return result.data.info.structured !== undefined ? parseCommitMessageValue(result.data.info.structured, meta) : parseCommitMessageValue(textFromParts(result.data.parts), meta)
+  return parseCommitMessageValue(text, meta)
 }

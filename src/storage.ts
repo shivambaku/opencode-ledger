@@ -1,4 +1,4 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Context as TuiPluginApi } from "@opencode/plugin/tui/context"
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { impactRank } from "./constants"
@@ -16,8 +16,11 @@ function ledgerScopeIDForDirectory(directory: string | undefined) {
   return hashString(normalizePath(directory || "unknown"))
 }
 
-export function ledgerScope(api: TuiPluginApi): LedgerScope {
-  return ledgerScopeForDirectory(api.state.path.worktree || api.state.path.directory)
+export function ledgerScope(api: TuiPluginApi, sessionID?: string): LedgerScope {
+  const route = api.ui.router.current()
+  const id = sessionID ?? (route.type === "session" ? route.sessionID : route.type === "plugin" ? route.data?.sessionID : undefined)
+  const location = typeof id === "string" ? api.data.session.get(id)?.location : undefined
+  return ledgerScopeForDirectory((location ?? api.location ?? api.data.location.default()).directory)
 }
 
 export function ledgerScopeForDirectory(directory: string | undefined, mode: DiffMode = "worktree", comparison?: BranchComparison): LedgerScope {
@@ -200,7 +203,7 @@ function orderedFiles(files: LedgerFile[]) {
 }
 
 export function routeScope(api: TuiPluginApi, directory: string | undefined, mode: DiffMode = "worktree") {
-  return ledgerScopeForDirectory(directory || api.state.path.worktree || api.state.path.directory, mode)
+  return ledgerScopeForDirectory(directory || ledgerScope(api).directory, mode)
 }
 
 export function ledgerFiles(scope: LedgerScope) {

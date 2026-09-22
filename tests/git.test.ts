@@ -1,4 +1,4 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Context as TuiPluginApi } from "@opencode/plugin/tui/context"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { existsSync } from "node:fs"
@@ -7,7 +7,7 @@ import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { test, type TestContext } from "node:test"
 import { promisify } from "node:util"
-import { reconcileWorkspaceDiff, resolveBranchScope } from "../src/git.ts"
+import { baseBranchRef, listBaseBranches, reconcileWorkspaceDiff, resolveBranchScope } from "../src/git.ts"
 import { ledgerScopeForDirectory, readFilesForScope, setBlockComment, setBlockResolved, writeFilesForScope } from "../src/storage.ts"
 
 const execute = promisify(execFile)
@@ -243,6 +243,113 @@ test("resolution reports actionable non-repository, unborn HEAD, and unrelated-h
   await assert.rejects(resolveBranchScope(directory), /no common ancestor.*shares history/)
 })
 
+test("base picker lists local and remote branches without tags or symbolic aliases, even without main", async (t) => {
+  const directory = await repository(t)
+  await git(directory, "branch", "-m", "develop")
+  await git(directory, "branch", "origin/develop")
+  await git(directory, "update-ref", "refs/remotes/origin/develop", "HEAD")
+  await git(directory, "update-ref", "refs/remotes/upstream/release/v1", "HEAD")
+  await git(directory, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+  await git(directory, "tag", "main")
+  const branches = await listBaseBranches(directory)
+  assert.deepEqual(branches, [
+    { ref: "refs/heads/develop", name: "develop", kind: "local" },
+    { ref: "refs/heads/origin/develop", name: "origin/develop", kind: "local" },
+    { ref: "refs/remotes/origin/develop", name: "origin/develop", kind: "remote" },
+    { ref: "refs/remotes/upstream/release/v1", name: "upstream/release/v1", kind: "remote" },
+  ])
+  await assert.rejects(resolveBranchScope(directory), /Press B/)
+  assert.equal((await resolveBranchScope(directory, branches[0].ref)).comparison?.baseRef, "refs/heads/develop")
+})
+
+test("alternate bases change the comparison and keep reviews isolated when switching back", async (t) => {
+  const directory = await repository(t)
+  await git(directory, "checkout", "-b", "develop")
+  await put(directory, "develop.txt", "develop change\n")
+  await commit(directory)
+  await git(directory, "checkout", "-b", "feature")
+  await put(directory, "shared.txt", "feature change\n")
+  await commit(directory)
+  const indexBefore = await readFile(join(directory, ".git/index"))
+  const main = await resolveBranchScope(directory)
+  await reconcileWorkspaceDiff(noSDK, main)
+  assert.deepEqual(readFilesForScope(main).map((file) => file.path).sort(), ["develop.txt", "shared.txt"])
+  const file = readFilesForScope(main).find((file) => file.path === "shared.txt")!
+  setBlockResolved(main, file.id, file.blocks[0].id, true)
+  setBlockComment(main, file.id, file.blocks[0].id, "Keep this review on main")
+
+  const develop = await resolveBranchScope(directory, "refs/heads/develop")
+  await reconcileWorkspaceDiff(noSDK, develop)
+  assert.notEqual(develop.id, main.id)
+  assert.deepEqual(readFilesForScope(develop).map((file) => file.path), ["shared.txt"])
+  assert.equal(readFilesForScope(develop)[0].blocks[0].resolved, false)
+  assert.equal(readFilesForScope(develop)[0].blocks[0].comment, undefined)
+
+  const returned = await resolveBranchScope(directory, "refs/heads/main")
+  assert.equal(returned.id, main.id)
+  await reconcileWorkspaceDiff(noSDK, returned)
+  const restored = readFilesForScope(returned).find((file) => file.path === "shared.txt")!
+  assert.equal(restored.blocks[0].resolved, true)
+  assert.equal(restored.blocks[0].comment, "Keep this review on main")
+  assert.equal(await git(directory, "branch", "--show-current"), "feature")
+  assert.deepEqual(await readFile(join(directory, ".git/index")), indexBefore)
+})
+
+test("local and remote bases with the same display name have distinct refs and review scopes", async (t) => {
+  const directory = await repository(t)
+  const original = await git(directory, "rev-parse", "HEAD")
+  await git(directory, "checkout", "-b", "feature")
+  await put(directory, "shared.txt", "feature change\n")
+  const head = await commit(directory)
+  await git(directory, "branch", "origin/main", head)
+  await git(directory, "update-ref", "refs/remotes/origin/main", original)
+  const local = await resolveBranchScope(directory, "refs/heads/origin/main")
+  const remote = await resolveBranchScope(directory, "refs/remotes/origin/main")
+  assert.equal(local.comparison?.base, head)
+  assert.equal(remote.comparison?.base, original)
+  assert.notEqual(local.id, remote.id)
+  assert.equal(baseBranchRef(local.comparison!.baseRef), "refs/heads/origin/main")
+  assert.equal(baseBranchRef(remote.comparison!.baseRef), "refs/remotes/origin/main")
+  assert.equal(remote.id, ledgerScopeForDirectory(directory, "branch", { ...remote.comparison!, baseRef: "origin/main" }).id)
+})
+
+test("deleted or invalid selected bases report errors instead of falling back to main", async (t) => {
+  const directory = await repository(t)
+  await git(directory, "branch", "release")
+  const branches = await listBaseBranches(directory)
+  const selected = branches.find((branch) => branch.name === "release")!
+  await git(directory, "branch", "-D", "release")
+  await assert.rejects(resolveBranchScope(directory, selected.ref), /Base branch release is unavailable.*Press B/)
+  await assert.rejects(resolveBranchScope(directory, "refs/heads/main~1"), /unavailable/)
+  await assert.rejects(resolveBranchScope(directory, "--all"), /Choose a local or remote-tracking branch/)
+  await git(directory, "checkout", "--orphan", "unrelated")
+  await git(directory, "commit", "--allow-empty", "-m", "separate history")
+  await git(directory, "checkout", "main")
+  await assert.rejects(resolveBranchScope(directory, "refs/heads/unrelated"), /no common ancestor.*Press B/)
+})
+
+test("alternate-base refreshes reject a moved base and do not write after changing selection", async (t) => {
+  const directory = await repository(t)
+  await git(directory, "branch", "develop")
+  await git(directory, "checkout", "-b", "feature")
+  await put(directory, "shared.txt", "feature change\n")
+  const head = await commit(directory)
+  const scope = await resolveBranchScope(directory, "refs/heads/develop")
+  await reconcileWorkspaceDiff(noSDK, scope)
+  const statePath = join(directory, ".opencode/ledger/state.json")
+  const before = await readFile(statePath, "utf8")
+  await git(directory, "update-ref", "refs/heads/develop", head)
+  await assert.rejects(reconcileWorkspaceDiff(noSDK, scope), /comparison base changed/)
+  assert.equal(await readFile(statePath, "utf8"), before)
+
+  const updated = await resolveBranchScope(directory, "refs/heads/develop")
+  let selection = "refs/heads/develop"
+  const pending = reconcileWorkspaceDiff(noSDK, updated, () => selection === "refs/heads/develop")
+  selection = "refs/heads/main"
+  assert.equal(await pending, false)
+  assert.equal(await readFile(statePath, "utf8"), before)
+})
+
 test("reconciliation rejects stale scopes after HEAD, branch, or comparison base changes", async (t) => {
   for (const change of ["HEAD", "branch", "base", "base ref"] as const) {
     await t.test(change, async (t) => {
@@ -343,7 +450,7 @@ test("unchanged hunk reviews survive new commits and hunk positions, but stay is
   }
 
   const worktree = ledgerScopeForDirectory(directory, "worktree")
-  const api = { client: { vcs: { diff2: { raw: async () => ({ data: updated.patch }) }, diff: async () => assert.fail("Unexpected worktree fallback") } } } as unknown as TuiPluginApi
+  const api = { client: { vcs: { diff: async () => ({ data: [{ file: updated.path, patch: updated.patch }] }) } } } as unknown as TuiPluginApi
   assert.notEqual(worktree.id, advanced.id)
   await reconcileWorkspaceDiff(api, worktree)
   assert.ok(readFilesForScope(worktree)[0].blocks.every((block) => !block.resolved && !block.comment && !block.review))
@@ -367,7 +474,7 @@ test("analyzed files refresh hunk positions when only hunk headers change", asyn
     "diff --git a/shared.txt b/shared.txt", "--- a/shared.txt", "+++ b/shared.txt",
     "@@ -10,3 +10,3 @@", " before", "-old", "+new", " after",
   ].join("\n")
-  const api = { client: { vcs: { diff2: { raw: async () => ({ data: patch }) }, diff: async () => assert.fail("Unexpected worktree fallback") } } } as unknown as TuiPluginApi
+  const api = { client: { vcs: { diff: async () => ({ data: [{ file: "shared.txt", patch }] }) } } } as unknown as TuiPluginApi
   await reconcileWorkspaceDiff(api, scope)
   const file = readFilesForScope(scope)[0]
   const block = file.blocks[0]
@@ -705,48 +812,38 @@ test("linked worktrees capture their own working state without changing either r
   assert.equal(existsSync(join(directory, ".opencode/ledger/state.json")), false)
 })
 
-test("worktree mode retains raw SDK diffs, structured fallback, and workspace file content", async (t) => {
+test("worktree mode uses V2 patches and local file content, and clears an empty changeset", async (t) => {
   const directory = await repository(t)
   await put(directory, "shared.txt", "local workspace content\n")
   const scope = ledgerScopeForDirectory(directory)
   assert.equal(scope.mode, "worktree")
   const patch = await git(directory, "diff", "--no-ext-diff", "--no-textconv", "--no-color")
-  let rawCalls = 0
-  let fallbackCalls = 0
-  let rawData = patch
+  let calls = 0
+  let diffs = [{ file: "shared.txt", patch, additions: 1, deletions: 1, status: "modified" }]
   const api = { client: { vcs: {
-    diff2: { raw: async (input: { directory: string }) => {
-      assert.equal(input.directory, directory)
-      rawCalls++
-      return { data: rawData }
-    } },
-    diff: async (input: { directory: string; mode: string }) => {
-      assert.deepEqual(input, { directory, mode: "git" })
-      fallbackCalls++
-      return { data: [{ file: "shared.txt", before: "base\n", after: "SDK content, not local\n", additions: 1, deletions: 1, status: "modified" }] }
+    diff: async (input: { location: { directory: string }; mode: string }) => {
+      assert.deepEqual(input, { location: { directory }, mode: "working" })
+      calls++
+      return { location: { directory }, data: diffs }
     },
   } } } as unknown as TuiPluginApi
   assert.equal(await reconcileWorkspaceDiff(api, scope), true)
-  assert.equal(rawCalls, 1)
-  assert.equal(fallbackCalls, 0)
+  assert.equal(calls, 1)
   assert.equal(readFilesForScope(scope)[0].content, "local workspace content\n")
   assert.match(readFilesForScope(scope)[0].patch, /\+local workspace content/)
 
-  rawData = ""
+  diffs = []
   assert.equal(await reconcileWorkspaceDiff(api, scope), true)
-  assert.equal(rawCalls, 2)
-  assert.equal(fallbackCalls, 1)
-  assert.equal(readFilesForScope(scope)[0].content, "local workspace content\n")
-  assert.match(readFilesForScope(scope)[0].patch, /\+SDK content, not local/)
+  assert.equal(calls, 2)
+  assert.deepEqual(readFilesForScope(scope), [])
 })
 
-test("a pending worktree fallback still checks shouldApply before storage writes", async (t) => {
+test("a pending V2 worktree request still checks shouldApply before storage writes", async (t) => {
   const directory = await repository(t)
   const scope = ledgerScopeForDirectory(directory)
   const result = Promise.withResolvers<{ data: { file: string; patch: string }[] }>()
   const started = Promise.withResolvers<void>()
   const api = { client: { vcs: {
-    diff2: { raw: async () => ({ data: "" }) },
     diff: () => { started.resolve(); return result.promise },
   } } } as unknown as TuiPluginApi
   let active = true

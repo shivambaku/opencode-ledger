@@ -1,4 +1,4 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Context as TuiPluginApi } from "@opencode/plugin/tui/context"
 import { spawn } from "node:child_process"
 import { ROUTE } from "./constants"
 import { blockComment, blockHasUnresolvedComment, blockLabel } from "./domain"
@@ -52,27 +52,27 @@ async function writeNativeClipboard(text: string) {
 }
 
 function currentSessionID(api: TuiPluginApi): string | undefined {
-  const route = api.route.current
-  if (route.name !== "session") return undefined
-  const params = route.params ?? {}
-  return typeof params.sessionID === "string" ? params.sessionID : undefined
+  const route = api.ui.router.current()
+  return route.type === "session" ? route.sessionID : undefined
 }
 
 export function activeLedger(api: TuiPluginApi) {
-  return api.route.current.name === ROUTE && !api.ui.dialog.open
+  const route = api.ui.router.current()
+  return route.type === "plugin" && route.name === ROUTE && api.keymap.mode.current() === "base"
 }
 
 export function openLedger(api: TuiPluginApi) {
   api.ui.dialog.clear()
   const sessionID = currentSessionID(api)
-  api.route.navigate(ROUTE, { sessionID, directory: api.state.path.worktree || api.state.path.directory, index: 0, scroll: 0 })
+  const location = sessionID ? api.data.session.get(sessionID)?.location : api.location
+  api.ui.router.navigate({ type: "plugin", name: ROUTE, data: { sessionID, directory: (location ?? api.data.location.default()).directory, index: 0, scroll: 0 } })
 }
 
 export function closeLedger(api: TuiPluginApi) {
-  const route = api.route.current
-  const state = route.name === ROUTE ? parseRouteParams(route.params) : undefined
-  if (state?.sessionID) api.route.navigate("session", { sessionID: state.sessionID })
-  else api.route.navigate("home")
+  const route = api.ui.router.current()
+  const state = route.type === "plugin" && route.name === ROUTE ? parseRouteParams(route.data) : undefined
+  if (state?.sessionID) api.ui.router.navigate({ type: "session", sessionID: state.sessionID })
+  else api.ui.router.navigate({ type: "home" })
 }
 
 function blockDiffBody(block: LedgerBlock) {

@@ -2,12 +2,13 @@
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import type { BoxRenderable, KeyEvent, TextareaOptions, TextareaRenderable } from "@opentui/core"
-import type { TuiPluginApi, TuiThemeCurrent } from "@opencode-ai/plugin/tui"
+import type { Context as TuiPluginApi } from "@opencode/plugin/tui/context"
+import type { ResolvedTheme as TuiThemeCurrent } from "@opencode/theme/tui"
 import { abortSession, deleteSession, requestAnalysis, requestCommitMessage } from "../analysis"
 import { blockContainsFileLine, blockForFileLine, blockHunkStart, buildDisplayRows, diffLineForFileLine } from "../display"
 import { blockApproved, blockComment, blockLabel, blockReviewed, blockStale, codeFiletype, fileApproved, fileImpact, fileNeedsAnalysis, fileNeedsApproval, fileRow, fileStatusMark, lineRangeText, unresolvedCommentCount } from "../domain"
 import { openEditor } from "../editor"
-import { reconcileWorkspaceDiff, resolveBranchScope } from "../git"
+import { baseBranchLabel, baseBranchRef, listBaseBranches, reconcileWorkspaceDiff, resolveBranchScope } from "../git"
 import { ledgerAction } from "../keys"
 import { closeLedger, writeClipboard, yankBlockToClipboard, yankUnresolvedCommentsToClipboard } from "../runtime"
 import { currentFile, ledgerFiles, ledgerStateVersion, readFilesForScope, routeScope, setBlockComment, setBlockResolved, setFileAnalysisResult, setFileResolved } from "../storage"
@@ -65,9 +66,9 @@ function CommentDialog(props: { title: string; initialValue: string; theme: TuiT
   })
 
   return (
-    <box position="absolute" zIndex={20} left={left()} top={top()} width={width()} height={height()} border borderColor={props.theme.borderActive} backgroundColor={props.theme.backgroundPanel} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
-      <text width={innerWidth()} fg={props.theme.text} truncate wrapMode="none"><b>{props.title}</b></text>
-      <text fg={props.theme.textMuted}> </text>
+    <box position="absolute" zIndex={20} left={left()} top={top()} width={width()} height={height()} border borderColor={props.theme.text.action.primary.base} backgroundColor={props.theme.background.raised.base} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
+      <text width={innerWidth()} fg={props.theme.text.base} truncate wrapMode="none"><b>{props.title}</b></text>
+      <text fg={props.theme.text.muted}> </text>
       <box width={innerWidth()} height={bodyHeight()} overflow="hidden">
         <textarea
           ref={(node) => {
@@ -79,25 +80,26 @@ function CommentDialog(props: { title: string; initialValue: string; theme: TuiT
           height={bodyHeight()}
           initialValue={props.initialValue}
           wrapMode="word"
-          textColor={props.theme.text}
-          focusedTextColor={props.theme.text}
-          backgroundColor={props.theme.backgroundElement}
-          focusedBackgroundColor={props.theme.backgroundElement}
+          textColor={props.theme.text.formfield.base}
+          focusedTextColor={props.theme.text.formfield.focused}
+          backgroundColor={props.theme.background.formfield.base}
+          focusedBackgroundColor={props.theme.background.formfield.focused}
           placeholder="Add a comment for this block..."
-          placeholderColor={props.theme.textMuted}
+          placeholderColor={props.theme.text.muted}
           keyBindings={commentKeyBindings}
           onSubmit={save}
           onContentChange={setDraft}
           onKeyPress={handleKey}
         />
       </box>
-      <text fg={props.theme.textMuted}> </text>
-      <text width={innerWidth()} fg={props.theme.textMuted} truncate wrapMode="none">enter save   shift+enter newline   esc cancel</text>
+      <text fg={props.theme.text.muted}> </text>
+      <text width={innerWidth()} fg={props.theme.text.muted} truncate wrapMode="none">enter save   shift+enter newline   esc cancel</text>
     </box>
   )
 }
 
 const helpRows: HelpRow[] = [
+  { section: "Review", keys: "B", desc: "Choose comparison base branch" },
   { section: "File View", keys: "j / k", desc: "Move file selection" },
   { section: "File View", keys: "enter", desc: "Open selected file diff" },
   { section: "File View", keys: "space", desc: "Toggle selected file approval" },
@@ -135,7 +137,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   let root: BoxRenderable | undefined
   const dim = useTerminalDimensions()
   const route = parseRouteParams(props.params)
-  const theme = props.api.theme.current
+  const theme = props.api.theme
   const selectedText = createMemo(() => selectedForeground(theme))
   const syntaxStyle = createCodeSyntax(props.api)
   const [cursor, setCursor] = createSignal(route.index)
@@ -159,6 +161,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   const [notice, setNotice] = createSignal<LedgerNotice | undefined>()
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
   const [mode, setMode] = createSignal<DiffMode>("branch")
+  const [selectedBase, setSelectedBase] = createSignal<string>()
+  let pickingBase = false
   const [scope, setScope] = createSignal(routeScope(props.api, route.directory, "branch"))
   const [diffReady, setDiffReady] = createSignal(false)
   const [diffError, setDiffError] = createSignal<string | undefined>()
@@ -225,7 +229,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
   const contentWidth = () => Math.max(1, dim().width - 4)
   const commentCountText = () => (commentCount() ? ` · ${commentCount()} ${commentCount() === 1 ? "comment" : "comments"}` : "")
-  const sourceLabel = () => mode() === "branch" ? `${scope().comparison?.name ?? "Branch"} + local vs ${scope().comparison?.baseRef ?? "main"}` : "Uncommitted Only"
+  const baseLabel = () => baseBranchLabel(selectedBase() ?? scope().comparison?.baseRef ?? "main")
+  const sourceLabel = () => mode() === "branch" ? `${scope().comparison?.name ?? "Branch"} + local vs ${baseLabel()}` : "Uncommitted Only"
   const headerTitle = () => `Ledger | ${sourceLabel()} | ${approvedBlocks()}/${totalBlocks()} approved${commentCountText()}`
   const headerWidth = () => Math.max(1, contentWidth() - 2)
   const headerHelpText = () => notice()?.text ?? helpText()
@@ -279,11 +284,11 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
 
   function fileStatusColor(file: LedgerFile, muted: boolean) {
-    if (muted) return theme.textMuted
+    if (muted) return theme.text.muted
     const mark = fileStatusMark(file)
-    if (mark === "A") return theme.diffAdded
-    if (mark === "D") return theme.diffRemoved
-    return theme.info
+    if (mark === "A") return theme.diff.text.added
+    if (mark === "D") return theme.diff.text.removed
+    return theme.text.feedback.info.base
   }
 
   function setAnalyzing(id: string, analyzing: boolean) {
@@ -308,11 +313,11 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   })
 
   function toneColor(tone: NoticeTone) {
-    if (tone === "success") return theme.success
-    if (tone === "warning") return theme.warning
-    if (tone === "error") return theme.error
-    if (tone === "info") return theme.info
-    return theme.textMuted
+    if (tone === "success") return theme.text.feedback.success.base
+    if (tone === "warning") return theme.text.feedback.warning.base
+    if (tone === "error") return theme.text.feedback.error.base
+    if (tone === "info") return theme.text.feedback.info.base
+    return theme.text.muted
   }
 
   function showLedgerNotice(text: string, tone: NoticeTone = "muted") {
@@ -339,7 +344,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
   }
 
   function helpText() {
-    return "b mode  r refresh  ? help"
+    return "B base  b mode  r refresh  ? help"
   }
 
   function keepHelpRowVisible(nextIndex = helpCursor()) {
@@ -611,7 +616,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const preserveID = selected()?.id
     setRefreshingDiff(true)
     try {
-      const next = source === "branch" ? await resolveBranchScope(scope().directory) : routeScope(props.api, route.directory)
+      const next = source === "branch" ? await resolveBranchScope(scope().directory, selectedBase()) : routeScope(props.api, route.directory)
       if (!active()) return false
       const changedScope = next.id !== scope().id
       let changedSnapshot = changedScope || JSON.stringify(next.comparison) !== JSON.stringify(scope().comparison)
@@ -671,6 +676,44 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     setExplanationVisible(false)
     completedFileForBack = undefined
     void reloadDiff()
+  }
+
+  async function chooseBase() {
+    if (pickingBase || disposed || commentEditor()) return
+    pickingBase = true
+    try {
+      const branches = await listBaseBranches(scope().directory)
+      if (disposed) return
+      if (!branches.length) {
+        showLedgerNotice("No base branches available. Create a branch or fetch a remote, then press B again.", "warning")
+        return
+      }
+      const current = selectedBase() ?? (scope().comparison ? baseBranchRef(scope().comparison!.baseRef) : undefined)
+      const ref = await props.api.ui.dialog.select({
+        title: "Comparison base",
+        placeholder: "Search branches",
+        current,
+        options: branches.map((branch) => ({
+          title: branch.name,
+          value: branch.ref,
+          category: branch.kind === "local" ? "Local branches" : "Remote-tracking branches",
+          description: branch.ref === current ? "Current base" : undefined,
+        })),
+      })
+      if (disposed || ref === undefined) return
+      // Invalidate pending analysis and diff writes before changing comparisons.
+      cancelAnalysis()
+      setSelectedBase(ref)
+      setMode("branch")
+      setDiffReady(false)
+      setDiffError(undefined)
+      setNotice(undefined)
+      await reloadDiff()
+    } catch (error) {
+      if (!disposed) showLedgerNotice(errorMessage(error), "error")
+    } finally {
+      pickingBase = false
+    }
   }
 
   function withActiveBlock(action: (file: LedgerFile, block: LedgerBlock) => void) {
@@ -806,13 +849,13 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const statusWidth = () => (showStatus() ? Math.min(statusText().length, Math.max(1, innerWidth - 1)) : 0)
     const pathWidth = () => Math.max(1, innerWidth - statusWidth())
     return (
-      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspect() && inspectFocus() === "diff" ? theme.borderActive : theme.border} paddingLeft={2} paddingRight={2}>
+      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspect() && inspectFocus() === "diff" ? theme.text.action.primary.base : theme.border.base} paddingLeft={2} paddingRight={2}>
         {file ? (
           <box flexDirection="column" overflow="hidden" flexGrow={1}>
             <box width={innerWidth} overflow="hidden" flexDirection="row" justifyContent="space-between" paddingBottom={1}>
-              <text width={pathWidth()} fg={theme.text} truncate wrapMode="none">{file.path}</text>
+              <text width={pathWidth()} fg={theme.text.base} truncate wrapMode="none">{file.path}</text>
               <Show when={showStatus()}>
-                <text width={statusWidth()} fg={theme.textMuted} truncate wrapMode="none">{statusText()}</text>
+                <text width={statusWidth()} fg={theme.text.muted} truncate wrapMode="none">{statusText()}</text>
               </Show>
             </box>
             <For each={visibleDiffLines()}>{(line) => {
@@ -821,7 +864,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
               return <DiffLine line={line.line} width={innerWidth} scrollX={horizontalScroll()} kind={line.kind} active={active()} blockActive={inspect() && rowHasActiveGutter(line)} explanationActive={explanationRegion()} blockResolved={!!activeBlock()?.resolved} path={file.path} filetype={selectedFiletype()} syntaxStyle={syntaxStyle()} theme={theme} />
             }}</For>
           </box>
-        ) : <text fg={diffError() ? theme.error : theme.textMuted}>{diffError() ? `${diffError()} Press r to retry or b to switch views.` : refreshingDiff() ? "Loading Git changes..." : mode() === "branch" ? `No net branch or local changes since the merge base with ${scope().comparison?.baseRef ?? "main"}. Press b for uncommitted only.` : "No uncommitted Git changes. Press b for branch + local changes."}</text>}
+        ) : <text fg={diffError() ? theme.text.feedback.error.base : theme.text.muted}>{diffError() ? `${diffError()} Press B to choose a base, r to retry, or b to switch views.` : refreshingDiff() ? "Loading Git changes..." : mode() === "branch" ? `No net branch or local changes since the merge base with ${baseLabel()}. Press B to choose a base or b for uncommitted only.` : "No uncommitted Git changes. Press B to choose a base or b for branch + local changes."}</text>}
       </box>
     )
   }
@@ -836,22 +879,22 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const footerText = () => `${clip(helpCursor(), 0, helpRows.length - 1) + 1}/${helpRows.length}   j/k move  ctrl+d/u page  ?/esc close`
 
     return (
-      <box position="absolute" zIndex={20} left={helpLeft()} top={helpTop()} width={helpWidth()} height={helpHeight()} border borderColor={theme.borderActive} backgroundColor={theme.backgroundMenu} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
-        <text fg={theme.text}><b>Ledger Help</b></text>
-        <text fg={theme.textMuted}> </text>
+      <box position="absolute" zIndex={20} left={helpLeft()} top={helpTop()} width={helpWidth()} height={helpHeight()} border borderColor={theme.text.action.primary.base} backgroundColor={theme.background.raised.high} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
+        <text fg={theme.text.base}><b>Ledger Help</b></text>
+        <text fg={theme.text.muted}> </text>
         <For each={visibleRows}>{(row, offset) => {
           const rowIndex = () => start + offset()
           const active = () => rowIndex() === helpCursor()
           return (
-          <box flexDirection="row" overflow="hidden" backgroundColor={active() ? theme.primary : undefined}>
-            <text width={sectionWidth} fg={active() ? selectedText() : theme.primary} truncate wrapMode="none">{row.section}</text>
-            <text width={keyWidth} fg={active() ? selectedText() : theme.text} truncate wrapMode="none">{row.keys}</text>
-            <text width={descWidth()} fg={active() ? selectedText() : theme.text} truncate wrapMode="none">{row.desc}</text>
+          <box flexDirection="row" overflow="hidden" backgroundColor={active() ? theme.background.action.primary.selected : undefined}>
+            <text width={sectionWidth} fg={active() ? selectedText() : theme.text.action.primary.base} truncate wrapMode="none">{row.section}</text>
+            <text width={keyWidth} fg={active() ? selectedText() : theme.text.base} truncate wrapMode="none">{row.keys}</text>
+            <text width={descWidth()} fg={active() ? selectedText() : theme.text.base} truncate wrapMode="none">{row.desc}</text>
           </box>
           )
         }}</For>
-        <text fg={theme.textMuted}> </text>
-        <text fg={theme.textMuted} truncate wrapMode="none">{footerText()}</text>
+        <text fg={theme.text.muted}> </text>
+        <text fg={theme.text.muted} truncate wrapMode="none">{footerText()}</text>
       </box>
     )
   }
@@ -861,8 +904,8 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const rows = explanationRows(innerWidth)
     const start = clip(explanationScroll(), 0, Math.max(0, rows.length - explanationVisibleRows()))
     return (
-      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspectFocus() === "explanation" ? theme.borderActive : theme.border} paddingLeft={2} paddingRight={2}>
-        <For each={rows.slice(start, start + explanationVisibleRows())}>{(row) => <text fg={row.tone ? toneColor(row.tone) : row.muted ? theme.textMuted : theme.text}>{row.text}</text>}</For>
+      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspectFocus() === "explanation" ? theme.text.action.primary.base : theme.border.base} paddingLeft={2} paddingRight={2}>
+        <For each={rows.slice(start, start + explanationVisibleRows())}>{(row) => <text fg={row.tone ? toneColor(row.tone) : row.muted ? theme.text.muted : theme.text.base}>{row.text}</text>}</For>
       </box>
     )
   }
@@ -897,6 +940,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       analyzeAll: controls.analyzeAll,
       commitMessage: controls.commitMessage,
       toggleMode,
+      chooseBase: () => { void chooseBase() },
       reloadDiff: controls.reloadDiff,
       stop: controls.stop,
       back: controls.back,
@@ -1076,7 +1120,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     reloadDiff: (force = true) => { void reloadDiff(force) },
     notice: showLedgerNotice,
     handleKey(key) {
-      if (props.api.ui.dialog.open) return false
+      if (props.api.keymap.mode.current() !== "base") return false
 
       const action = ledgerAction(key)
       if (!action) return false
@@ -1154,7 +1198,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       focusable
       renderAfter={() => {
         if (commentEditor()) return
-        if (!props.api.ui.dialog.open && !root?.focused) root?.focus()
+        if (props.api.keymap.mode.current() === "base" && !root?.focused) root?.focus()
       }}
       width={dim().width}
       height={dim().height}
@@ -1163,14 +1207,14 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
       paddingTop={1}
       paddingLeft={2}
       paddingRight={2}
-      backgroundColor={theme.background}
+      backgroundColor={theme.background.base}
     >
       <box width={headerWidth()} height={1} marginLeft={1} marginRight={1} flexDirection="row" alignItems="flex-start" justifyContent="space-between" paddingBottom={0}>
         <box height={1} width={Math.min(headerTitle().length, Math.max(1, headerWidth() - 8))} flexDirection="row" overflow="hidden">
-          <text fg={theme.text} truncate wrapMode="none"><b>Ledger</b> <span style={{ fg: theme.textMuted }}>| {sourceLabel()} | {approvedBlocks()}/{totalBlocks()} approved{commentCountText()}</span></text>
+          <text fg={theme.text.base} truncate wrapMode="none"><b>Ledger</b> <span style={{ fg: theme.text.muted }}>| {sourceLabel()} | {approvedBlocks()}/{totalBlocks()} approved{commentCountText()}</span></text>
         </box>
         <box height={1} width={headerHelpWidth()} flexDirection="row" alignItems="flex-start" justifyContent="flex-end" overflow="hidden">
-          <text width={headerHelpTextWidth()} fg={notice() ? toneColor(notice()!.tone) : theme.textMuted} truncate wrapMode="none">{headerHelpText()}</text>
+          <text width={headerHelpTextWidth()} fg={notice() ? toneColor(notice()!.tone) : theme.text.muted} truncate wrapMode="none">{headerHelpText()}</text>
         </box>
       </box>
       {inspect() ? (
@@ -1189,7 +1233,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
         )
       ) : (
         <box flexDirection="row" gap={1} flexGrow={1}>
-          <box width={normalWidths().left} flexDirection="column" border borderColor={theme.borderActive} paddingLeft={1} paddingRight={1}>
+          <box width={normalWidths().left} flexDirection="column" border borderColor={theme.text.action.primary.base} paddingLeft={1} paddingRight={1}>
             <For each={shownFiles()}>{(file) => {
               const on = () => file.id === selected()?.id
               const approved = () => fileApproved(file)
@@ -1201,11 +1245,11 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
               const name = () => filename(file.path)
               const fixedWidth = () => baseText().length + additions().length + deletions().length + 5
               const nameWidth = () => Math.max(1, fileListInnerWidth() - fixedWidth())
-              const textColor = () => (on() ? selectedText() : muted() ? theme.textMuted : theme.text)
-              const addColor = () => (on() ? selectedText() : muted() ? theme.textMuted : theme.diffAdded)
-              const deleteColor = () => (on() ? selectedText() : muted() ? theme.textMuted : theme.diffRemoved)
+              const textColor = () => (on() ? selectedText() : muted() ? theme.text.muted : theme.text.base)
+              const addColor = () => (on() ? selectedText() : muted() ? theme.text.muted : theme.diff.text.added)
+              const deleteColor = () => (on() ? selectedText() : muted() ? theme.text.muted : theme.diff.text.removed)
               return (
-                <box flexDirection="row" overflow="hidden" backgroundColor={on() ? theme.primary : undefined}>
+                <box flexDirection="row" overflow="hidden" backgroundColor={on() ? theme.background.action.primary.selected : undefined}>
                   <text width={baseText().length + 1} flexShrink={0} fg={textColor()} truncate wrapMode="none">{baseText()} </text>
                   <text width={2} flexShrink={0} fg={on() ? selectedText() : fileStatusColor(file, muted())} truncate wrapMode="none">{status()} </text>
                   <text width={nameWidth()} fg={textColor()} truncate wrapMode="none">{name()}</text>

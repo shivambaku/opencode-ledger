@@ -1,10 +1,10 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Context as TuiPluginApi } from "@opencode/plugin/tui/context"
 import { execFile } from "node:child_process"
 import { copyFile, lstat, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ensureLedgerIgnored, ledgerScopeForDirectory, readFilesForScope, writeFilesForScope } from "./storage"
-import type { BranchComparison, FileDiff, FileStatus, LedgerBlock, LedgerFile, LedgerScope, ParsedBlock } from "./types"
+import type { BaseBranch, FileDiff, FileStatus, LedgerBlock, LedgerFile, LedgerScope, ParsedBlock } from "./types"
 import { isRecord, normalizePath, patchHash, readWorkspaceFile, unifiedDiff } from "./utils"
 
 function runGit(directory: string, args: string[], input?: string, env?: NodeJS.ProcessEnv): Promise<Buffer> {
@@ -21,7 +21,26 @@ function runGit(directory: string, args: string[], input?: string, env?: NodeJS.
   })
 }
 
-export async function resolveBranchScope(directory: string): Promise<LedgerScope> {
+export function baseBranchRef(ref: string) {
+  if (ref === "main") return "refs/heads/main"
+  if (ref === "origin/main") return "refs/remotes/origin/main"
+  return ref
+}
+
+export function baseBranchLabel(ref: string) {
+  return ref.replace(/^refs\/(?:heads|remotes)\//, "")
+}
+
+export async function listBaseBranches(directory: string): Promise<BaseBranch[]> {
+  const output = (await runGit(directory, ["for-each-ref", "--format=%(refname)%09%(symref)", "refs/heads/", "refs/remotes/"])).toString("utf8")
+  return output.split("\n").flatMap((line): BaseBranch[] => {
+    const [ref, symbolic] = line.split("\t")
+    if (!ref || symbolic) return []
+    return [{ ref, name: baseBranchLabel(ref), kind: ref.startsWith("refs/heads/") ? "local" : "remote" }]
+  }).sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name))
+}
+
+export async function resolveBranchScope(directory: string, selectedBase?: string): Promise<LedgerScope> {
   let root: string
   try {
     root = (await runGit(directory, ["rev-parse", "--show-toplevel"])).toString("utf8").replace(/\r?\n$/, "")
@@ -43,19 +62,25 @@ export async function resolveBranchScope(directory: string): Promise<LedgerScope
     throw new Error("Cannot resolve the current Git commit. Commit on this branch before comparing it in Ledger.", { cause })
   }
 
-  let baseRef: BranchComparison["baseRef"] = "main"
-  let base: string
-  try {
-    base = (await runGit(root, ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"])).toString("utf8").trim()
-  } catch (error) {
-    if (!isRecord(error) || error.code !== 1) throw error
-    baseRef = "origin/main"
+  const candidates = selectedBase === undefined ? ["refs/heads/main", "refs/remotes/origin/main"] : [baseBranchRef(selectedBase)]
+  let baseRef = "main"
+  let base: string | undefined
+  for (const ref of candidates) {
+    if (!/^refs\/(heads|remotes)\/.+/.test(ref)) throw new Error("Choose a local or remote-tracking branch as the comparison base.")
     try {
-      base = (await runGit(root, ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"])).toString("utf8").trim()
-    } catch (cause) {
-      if (!isRecord(cause) || cause.code !== 1) throw cause
-      throw new Error("Branch comparison requires main or origin/main. Create a local main branch or fetch origin/main, then refresh Ledger. No fetch was attempted.", { cause })
+      // Reject revision expressions as well as refs deleted since opening the picker.
+      await runGit(root, ["show-ref", "--verify", "--quiet", ref])
+      base = (await runGit(root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`])).toString("utf8").trim()
+      // Preserve the shipped state keys for the two original comparison bases.
+      baseRef = ref === "refs/heads/main" ? "main" : ref === "refs/remotes/origin/main" ? "origin/main" : ref
+      break
+    } catch (error) {
+      if (!isRecord(error) || error.code !== 1) throw error
     }
+  }
+  if (!base) {
+    if (selectedBase !== undefined) throw new Error(`Base branch ${baseBranchLabel(selectedBase)} is unavailable. Press B to choose another base or refresh after restoring the branch.`)
+    throw new Error("Branch comparison requires main or origin/main. Press B to choose a base. Create a local main branch or fetch origin/main, then refresh Ledger. No fetch was attempted.")
   }
 
   let mergeBase: string
@@ -63,7 +88,7 @@ export async function resolveBranchScope(directory: string): Promise<LedgerScope
     mergeBase = (await runGit(root, ["merge-base", base, head])).toString("utf8").trim()
   } catch (cause) {
     if (!isRecord(cause) || cause.code !== 1) throw cause
-    throw new Error(`The current branch and ${baseRef} have no common ancestor. Compare a branch that shares history with ${baseRef}.`, { cause })
+    throw new Error(`The current branch and ${baseBranchLabel(baseRef)} have no common ancestor. Press B to choose a branch that shares history with ${baseBranchLabel(baseRef)}.`, { cause })
   }
 
   const name = ref ? ref.replace(/^refs\/heads\//, "") : `HEAD (${head})`
@@ -425,7 +450,9 @@ async function replaceWorkspaceDiffs(scope: LedgerScope, diffs: unknown[]) {
 export async function reconcileWorkspaceDiff(api: TuiPluginApi, scope: LedgerScope, shouldApply?: () => boolean) {
   if (scope.mode === "branch") {
     const diffs = await branchDiffs(scope)
-    const current = await resolveBranchScope(scope.directory)
+    const current = await resolveBranchScope(scope.directory, scope.comparison?.baseRef).catch((cause) => {
+      throw new Error("The branch or comparison base changed while capturing local changes. Refresh Ledger to try again.", { cause })
+    })
     if (current.id !== scope.id || JSON.stringify(current.comparison) !== JSON.stringify(scope.comparison)) {
       throw new Error("The branch or comparison base changed while capturing local changes. Refresh Ledger to try again.")
     }
@@ -434,19 +461,7 @@ export async function reconcileWorkspaceDiff(api: TuiPluginApi, scope: LedgerSco
     return true
   }
 
-  const raw = await api.client.vcs.diff2.raw({ directory: scope.directory })
-  if (!raw.error && typeof raw.data === "string") {
-    if (shouldApply && !shouldApply()) return false
-    const diffs = fileDiffsFromRawPatch(raw.data)
-    if (diffs.length) {
-      await replaceWorkspaceDiffs(scope, diffs)
-      return true
-    }
-  }
-  if (shouldApply && !shouldApply()) return false
-
-  const result = await api.client.vcs.diff({ directory: scope.directory, mode: "git" })
-  if (result.error || !result.data) throw new Error("Failed to refresh Git diff for Ledger.")
+  const result = await api.client.vcs.diff({ location: { directory: scope.directory }, mode: "working" })
   if (shouldApply && !shouldApply()) return false
   await replaceWorkspaceDiffs(scope, result.data)
   return true

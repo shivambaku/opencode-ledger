@@ -1,4 +1,4 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Context as TuiPluginApi } from "@opencode/plugin/tui/context"
 import type { LedgerBlock, LedgerFile, LedgerScope, NoticeTone } from "./types"
 import { filename, shellQuote, splitCommand } from "./utils"
 

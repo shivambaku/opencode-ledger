@@ -1,5 +1,6 @@
 import { MAX_EXPLANATIONS_PER_HUNK } from "./constants"
-import { retrieveReviewContext, type RetrievedContext } from "./context"
+import type { OpenCodeClient } from "@opencode/client"
+import { retrieveReviewContext, type RetrievedContext } from "./contextLookup"
 import { blockStale, lineRangeText } from "./domain"
 import type { LedgerFile, LedgerScope } from "./types"
 import { limitText } from "./utils"
@@ -50,8 +51,8 @@ function numberedDiff(block: LedgerFile["blocks"][number]) {
     .join("\n")
 }
 
-export async function buildReviewPrompt(scope: LedgerScope, file: LedgerFile): Promise<ReviewPrompt> {
-  const context = await retrieveReviewContext(scope, file)
+export async function buildReviewPrompt(client: OpenCodeClient, scope: LedgerScope, file: LedgerFile): Promise<ReviewPrompt> {
+  const context = await retrieveReviewContext(client, scope, file)
   const hunkSummaries: ReviewPrompt["hunks"] = []
   const hunks = file.blocks
     .map((block) => {
