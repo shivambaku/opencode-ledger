@@ -15,7 +15,7 @@ export function DiffLine(props: { line: string; width: number; scrollX: number; 
   const gutter = () => (props.blockActive ? "▌ " : "  ")
   const gutterColor = () => {
     if (!props.blockActive) return props.theme.border.base
-    if (props.active) return props.theme.text.action.primary.base
+    if (props.active) return props.theme.background.action.primary.focused
     if (props.blockResolved) return props.theme.text.feedback.success.base
     return props.explanationActive ? props.theme.hue.accent[500] : props.theme.text.action.secondary.base
   }

@@ -66,7 +66,7 @@ function CommentDialog(props: { title: string; initialValue: string; theme: TuiT
   })
 
   return (
-    <box position="absolute" zIndex={20} left={left()} top={top()} width={width()} height={height()} border borderColor={props.theme.text.action.primary.base} backgroundColor={props.theme.background.raised.base} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
+    <box position="absolute" zIndex={20} left={left()} top={top()} width={width()} height={height()} border borderColor={props.theme.background.action.primary.focused} backgroundColor={props.theme.background.raised.base} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
       <text width={innerWidth()} fg={props.theme.text.base} truncate wrapMode="none"><b>{props.title}</b></text>
       <text fg={props.theme.text.muted}> </text>
       <box width={innerWidth()} height={bodyHeight()} overflow="hidden">
@@ -849,7 +849,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const statusWidth = () => (showStatus() ? Math.min(statusText().length, Math.max(1, innerWidth - 1)) : 0)
     const pathWidth = () => Math.max(1, innerWidth - statusWidth())
     return (
-      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspect() && inspectFocus() === "diff" ? theme.text.action.primary.base : theme.border.base} paddingLeft={2} paddingRight={2}>
+      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspect() && inspectFocus() === "diff" ? theme.background.action.primary.focused : theme.border.base} paddingLeft={2} paddingRight={2}>
         {file ? (
           <box flexDirection="column" overflow="hidden" flexGrow={1}>
             <box width={innerWidth} overflow="hidden" flexDirection="row" justifyContent="space-between" paddingBottom={1}>
@@ -879,15 +879,15 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const footerText = () => `${clip(helpCursor(), 0, helpRows.length - 1) + 1}/${helpRows.length}   j/k move  ctrl+d/u page  ?/esc close`
 
     return (
-      <box position="absolute" zIndex={20} left={helpLeft()} top={helpTop()} width={helpWidth()} height={helpHeight()} border borderColor={theme.text.action.primary.base} backgroundColor={theme.background.raised.high} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
+      <box position="absolute" zIndex={20} left={helpLeft()} top={helpTop()} width={helpWidth()} height={helpHeight()} border borderColor={theme.background.action.primary.focused} backgroundColor={theme.background.raised.high} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column">
         <text fg={theme.text.base}><b>Ledger Help</b></text>
         <text fg={theme.text.muted}> </text>
         <For each={visibleRows}>{(row, offset) => {
           const rowIndex = () => start + offset()
           const active = () => rowIndex() === helpCursor()
           return (
-          <box flexDirection="row" overflow="hidden" backgroundColor={active() ? theme.background.action.primary.selected : undefined}>
-            <text width={sectionWidth} fg={active() ? selectedText() : theme.text.action.primary.base} truncate wrapMode="none">{row.section}</text>
+          <box flexDirection="row" overflow="hidden" backgroundColor={active() ? theme.background.action.primary.focused : undefined}>
+            <text width={sectionWidth} fg={active() ? selectedText() : theme.background.action.primary.focused} truncate wrapMode="none">{row.section}</text>
             <text width={keyWidth} fg={active() ? selectedText() : theme.text.base} truncate wrapMode="none">{row.keys}</text>
             <text width={descWidth()} fg={active() ? selectedText() : theme.text.base} truncate wrapMode="none">{row.desc}</text>
           </box>
@@ -904,7 +904,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
     const rows = explanationRows(innerWidth)
     const start = clip(explanationScroll(), 0, Math.max(0, rows.length - explanationVisibleRows()))
     return (
-      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspectFocus() === "explanation" ? theme.text.action.primary.base : theme.border.base} paddingLeft={2} paddingRight={2}>
+      <box width={width} height={layout.height} flexGrow={layout.flexGrow} flexShrink={layout.flexShrink} flexBasis={layout.flexBasis} minHeight={layout.minHeight} overflow="hidden" flexDirection="column" border borderColor={inspectFocus() === "explanation" ? theme.background.action.primary.focused : theme.border.base} paddingLeft={2} paddingRight={2}>
         <For each={rows.slice(start, start + explanationVisibleRows())}>{(row) => <text fg={row.tone ? toneColor(row.tone) : row.muted ? theme.text.muted : theme.text.base}>{row.text}</text>}</For>
       </box>
     )
@@ -1233,7 +1233,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
         )
       ) : (
         <box flexDirection="row" gap={1} flexGrow={1}>
-          <box width={normalWidths().left} flexDirection="column" border borderColor={theme.text.action.primary.base} paddingLeft={1} paddingRight={1}>
+          <box width={normalWidths().left} flexDirection="column" border borderColor={theme.background.action.primary.focused} paddingLeft={1} paddingRight={1}>
             <For each={shownFiles()}>{(file) => {
               const on = () => file.id === selected()?.id
               const approved = () => fileApproved(file)
@@ -1249,7 +1249,7 @@ export function LedgerScreen(props: { api: TuiPluginApi; params?: Record<string,
               const addColor = () => (on() ? selectedText() : muted() ? theme.text.muted : theme.diff.text.added)
               const deleteColor = () => (on() ? selectedText() : muted() ? theme.text.muted : theme.diff.text.removed)
               return (
-                <box flexDirection="row" overflow="hidden" backgroundColor={on() ? theme.background.action.primary.selected : undefined}>
+                <box flexDirection="row" overflow="hidden" backgroundColor={on() ? theme.background.action.primary.focused : undefined}>
                   <text width={baseText().length + 1} flexShrink={0} fg={textColor()} truncate wrapMode="none">{baseText()} </text>
                   <text width={2} flexShrink={0} fg={on() ? selectedText() : fileStatusColor(file, muted())} truncate wrapMode="none">{status()} </text>
                   <text width={nameWidth()} fg={textColor()} truncate wrapMode="none">{name()}</text>

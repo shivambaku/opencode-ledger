@@ -31,8 +31,10 @@ export function activeRowBackground(theme: TuiThemeCurrent, kind: VisibleDiffKin
 }
 
 export function selectedForeground(theme: TuiThemeCurrent) {
-  if (theme.text.action.primary.selected.a > 0) return theme.text.action.primary.selected
-  const { r, g, b } = theme.background.action.primary.selected
+  // V2's selected state can be transparent; the keyboard cursor uses the
+  // focused pair so the active row has a solid fill and matching foreground.
+  if (theme.text.action.primary.focused.a > 0) return theme.text.action.primary.focused
+  const { r, g, b } = theme.background.action.primary.focused
   const luminance = 0.299 * r + 0.587 * g + 0.114 * b
   return luminance > 0.5 ? RGBA.fromInts(0, 0, 0) : RGBA.fromInts(255, 255, 255)
 }
