@@ -39,7 +39,7 @@ export function selectedForeground(theme: TuiThemeCurrent) {
   return luminance > 0.5 ? RGBA.fromInts(0, 0, 0) : RGBA.fromInts(255, 255, 255)
 }
 
-function codeSyntax(theme: TuiThemeCurrent) {
+function codeSyntax(theme: TuiThemeCurrent, owner: TuiPluginApi["renderer"]["nativeScene"]) {
   return SyntaxStyle.fromStyles({
     default: { fg: theme.text.base },
     comment: { fg: theme.syntax.comment, italic: true },
@@ -83,7 +83,7 @@ function codeSyntax(theme: TuiThemeCurrent) {
     spell: { fg: theme.markdown.text },
     nospell: { fg: theme.markdown.text },
     conceal: { fg: theme.text.muted },
-  })
+  }, owner)
 }
 
 export function createCodeSyntax(api: TuiPluginApi) {
@@ -107,7 +107,7 @@ export function createCodeSyntax(api: TuiPluginApi) {
 
   return createMemo(() => {
     const previous = current
-    current = codeSyntax(api.theme)
+    current = codeSyntax(api.theme, api.renderer.nativeScene)
     if (previous) release(previous)
     return current
   })

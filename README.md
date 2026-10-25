@@ -5,7 +5,7 @@ mark changes reviewed. Press **?** for shortcuts and **q** to close.
 
 ## Install
 
-Requires OpenCode 2.0.12 or newer, Git 2.43 or newer, and a local Git repository
+Requires OpenCode 2.1.3 or newer, Git 2.43 or newer, and a local Git repository
 with at least one commit. AI features use your configured OpenCode model provider.
 
 ```sh
